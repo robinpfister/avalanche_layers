@@ -1,3 +1,6 @@
+data_layer/
+data_raw/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
