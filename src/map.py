@@ -30,6 +30,7 @@ class Map():
         os.makedirs(f'{self.map_folder}/avalanche_problem')
         os.makedirs(f'{self.map_folder}/avalanche_report')
         os.makedirs(f'{self.map_folder}/micro_regions')
+        
         self.merge_tif_files(dgm_folder, f'{self.map_folder}/height.tif')
 
         if tirol == True:
