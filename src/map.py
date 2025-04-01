@@ -8,44 +8,59 @@ import time
 from matplotlib import pyplot
 from matplotlib.colors import Normalize
 import gitlab
+from enum import Enum
 
 from src.layers import Layers
 
+class Region(Enum):
+    BAVARIA = 'bavaria'
+    SWITZERLAND = 'switzerland'
+    TYROL = 'tyrol'
 
 class Map():
     def __init__(self, layerCalculatorFactory):
         gdal.UseExceptions()
 
+        self.layer_data_directory = 'layer_data'
+        self.working_region_directory = None
+
+        self.working_projection = None
+        self.working_geotransform = None
+
+        self.avalanche_report_url = {Region.BAVARIA : 'https://static.lawinen-warnung.eu/bulletins/2025-04-02/2025-04-02_DE-BY_de_CAAMLv6.xml', #aktueller tag!!!!!!!!!!!!!
+                                     Region.SWITZERLAND : "https://aws.slf.ch/api/bulletin/caaml/v4/de/geojson",
+                                     Region.TYROL : "https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.json"}
+        
+        self.avalanche_report_microregions = {Region.BAVARIA : ['DE-BY'],
+                             Region.SWITZERLAND : None,
+                             Region.TYROL : ["AT-07", 'IT-32-BZ', 'IT-32-TN']}
+
         self.layerCalculatorFactory = layerCalculatorFactory
-
-        self.map_folder = None
- 
-        self.projection = None
-        self.geotransform = None
-
-    def register_new_map(self, dgm_folder, map_folder, tirol):
-        
-        self.map_folder = map_folder
-        os.makedirs(f'{self.map_folder}/preprocessed_data')
-        os.makedirs(f'{self.map_folder}/avalanche_problem')
-        os.makedirs(f'{self.map_folder}/avalanche_report')
-        os.makedirs(f'{self.map_folder}/micro_regions')
-        
-        self.merge_tif_files(dgm_folder, f'{self.map_folder}/height.tif')
-
-        if tirol == True:
-            self.cut_1_edge(f'{self.map_folder}/height.tif')
-
-        #self.downscale_tif_file(f'{self.map_folder}/height.tif', 2)
-
         
 
-        file = gdal.Open(f'{self.map_folder}/height.tif')
-        self.geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
-        self.projection = str(file.GetProjection())
-        file = None
+##### PULL DGM #####
 
-    def cut_1_edge(self, path):
+    def register_new(self):
+        for region in Region:
+            region_directory = region.value
+
+            if os.path.isdir(f'input_data/DGM_{region_directory}'):
+                data_available = bool(os.listdir(f'input_data/DGM_{region_directory}'))
+            else:
+                continue
+
+            if data_available:
+                os.makedirs(f'{self.layer_data_directory}/{region_directory}/preprocessed_data')
+        
+                self.merge_tif_files(f'input_data/DGM_{region_directory}', f'{self.layer_data_directory}/{region_directory}/height.tif')
+
+                if region == Region.TYROL:
+                    self.cut_1_edge(f'{self.layer_data_directory}/{region_directory}/height.tif')
+
+                if region == Region.TYROL or region == Region.SWITZERLAND:
+                    self.downscale_tif_file(f'{self.layer_data_directory}/height.tif', 2)
+
+    def cut_1_edge(self, path): # CHECK
         
         file = gdal.Open(path)
         layer_array = file.ReadAsArray()
@@ -74,7 +89,7 @@ class Map():
         band.FlushCache()
         band.ComputeStatistics(False)
 
-    def downscale_tif_file(self, path, scale_factor): # private
+    def downscale_tif_file(self, path, scale_factor): # CHECK
         file = gdal.Open(path)
         array = np.array(file.ReadAsArray(), dtype=np.float32)
         projektion = file.GetProjection()
@@ -118,99 +133,74 @@ class Map():
         band.FlushCache()
         band.ComputeStatistics(False)
 
-    def merge_tif_files(self, folder, output_file): # private
+    def merge_tif_files(self, folder, output_file): # CHECK
 
         tif_files = glob.glob(f'{folder}/*.tif') 
 
         gdal.Warp(output_file, tif_files, format="GTiff", srcNodata=-9999, dstNodata=-9999)   
 
-    def register_existing_map(self, map_folder):
+    def set_working_region(self, region):
+        if isinstance(region, Region):
+            self.working_region_directory = region.value
 
-        self.map_folder = map_folder
+            # set working geotransform & projection
+            file = gdal.Open(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif')
+            self.working_geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
+            self.working_projection = str(file.GetProjection())
+            file = None
 
-        file = gdal.Open(f'{self.map_folder}/height.tif')
-        self.geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
-        self.projection = str(file.GetProjection())
-        file = None
+##### PULL AVALANCHE REPORT #####
 
-    def calculateLayer(self, layertype):
-        layerCalculator = self.layerCalculatorFactory.get_calculator(layertype)
-        layers = {}
-        for l in layerCalculator.required_layers:
-            if os.path.isfile(f'{self.map_folder}/{l.value}'):
-                file = gdal.Open(f'{self.map_folder}/{l.value}')
-                array = np.array(file.ReadAsArray(), dtype=np.float32)
-                layers[l] = array
-                file = None
+    def pull_new(self):
+        for region in Region:
+            region_directory = region.value
+
+            if region != Region.BAVARIA:
+                continue
+
+            #os.makedirs(f'{self.layer_data_directory}/{region_directory}/micro_regions')
+            #os.makedirs(f'{self.layer_data_directory}/{region_directory}/avalanche_problem')
+            os.makedirs(f'{self.layer_data_directory}/{region_directory}/report_data')
+
+            # Pull Avalanche Report
+            avalanche_report_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/raw_avalanche_report'
+            if region == Region.BAVARIA:
+                self.download_avalanche_report_xml(f'{avalanche_report_filepath}.xml', self.avalanche_report_url[region])
             else:
-                if type(l) == Layers:
-                    self.calculateLayer(l)
-                    file = gdal.Open(f'{self.map_folder}/{l.value}')
-                    array = np.array(file.ReadAsArray(), dtype=np.float32)
-                    layers[l] = array
-                    file = None
-                else:
-                    self.calculateLayer(type(l))
-                    file = gdal.Open(f'{self.map_folder}/{l.value}')
-                    array = np.array(file.ReadAsArray(), dtype=np.float32)
-                    layers[l] = array
-                    file = None
-        start = time.time()
-        calculated_layers = layerCalculator.calculate(layers)
-        ende = time.time()
-        print(f'[LOG] Berechnungzeit {layertype}: {round(ende-start, 2)}s')
-        if type(layertype) == Layers:
-            rows, columns = np.shape(calculated_layers)
-            driver = gdal.GetDriverByName('GTiff')
-            output_raster = driver.Create(f'{self.map_folder}/{layertype.value}',
-                                                int(columns),
-                                                int(rows),
-                                                1,
-                                                eType = gdal.GDT_Float32)
+                self.download_avalanche_report_json(f'{avalanche_report_filepath}.json', self.avalanche_report_url[region])
 
-            output_raster.SetProjection(self.projection)
-            output_raster.SetGeoTransform(self.geotransform)
-            band = output_raster.GetRasterBand(1)
-            band.SetNoDataValue(-9999)
-            band.WriteArray(calculated_layers)          
-            band.FlushCache()
-            band.ComputeStatistics(False)
-            # Einzelnes Speichern
-        else:
-            for i, l1 in enumerate(layertype):
-                rows, columns = np.shape(calculated_layers[i])
-                driver = gdal.GetDriverByName('GTiff')
-                output_raster = driver.Create(f'{self.map_folder}/{l1.value}',
-                                                int(columns),
-                                                int(rows),
-                                                1,
-                                                eType = gdal.GDT_Float32)
+            # Pull Microregions
+            microregions_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions.json'
+            self.pull_microregions(microregions_filepath, self.avalanche_report_microregions[region])
+            microregions_espg2056_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions_espg2056.json'
+            self.convert_coordinate_reference(microregions_filepath, microregions_espg2056_filepath, 2056)
 
-                output_raster.SetProjection(self.projection)
-                output_raster.SetGeoTransform(self.geotransform)
-                band = output_raster.GetRasterBand(1)
-                band.SetNoDataValue(-9999)
-                band.WriteArray(calculated_layers[i])          
-                band.FlushCache()
-                band.ComputeStatistics(False)
+
     
-    def createAvalancheReportLayersTYRL(self):
-
-        regions = ["AT-07", 'IT-32-BZ', 'IT-32-TN']
-        self.pull_avalanche_report(f'{self.map_folder}/avalanche_report/report.json', "https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.json")
-        self.pull_microregions(regions)
-        for region in regions:
-            self.convert_json_coordinate_reference(f'{self.map_folder}/micro_regions/{region}.json', f'{self.map_folder}/micro_regions/{region}_espg2056.json', 2056)
-        self.create_avalanche_report_summary2(f'{self.map_folder}/avalanche_report/report.json', f'{self.map_folder}/avalanche_report/report_summary.json')
-        self.create_geotif_report_features(regions, f'{self.map_folder}/avalanche_report/report_geometry.json')
-        self.burn_geometries_in_raster(f'{self.map_folder}/{Layers.HEIGHT.value}', f'{self.map_folder}/{Layers.AVALANCHE_REPORT_MASK.value}', f'{self.map_folder}/avalanche_report/report_geometry.json')
-        file = gdal.Open(f'{self.map_folder}/avalanche_report/avalanche_report_mask.tif')
-        array = file.ReadAsArray()
-        pyplot.imshow(array)
-        pyplot.show()
-
-    def pull_microregions(self, regions):
-
+    def download_avalanche_report_xml(self, file, url): # CHECK
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.content
+            writeFile = open(file, 'wb')
+            writeFile.write(data)
+            writeFile.close()
+            print('Downloaded avalanche report')
+        else:
+            print('Download of avalanche report doesn\'t work')
+    
+    def pull_avalanche_report_json(self, file, url): # CHECK
+        response = requests.get(url)
+        if response.status_code == 200:
+            data = response.json()
+            writeFile = open(file, 'w+', encoding='utf-8')
+            json.dump(data, writeFile, ensure_ascii=False, indent=4)
+            writeFile.close()
+            print('Downloaded avalanche report')
+        else:
+            print('Download of avalanche report doesn\'t work')
+            
+    def pull_microregions(self, file, regions): # CHECK TODO: umbauen das alle regionen untereinander gepackt werden 
+        print('in')
         # GitLab URL und Access Token (PAT)
         GITLAB_URL = "https://gitlab.com"  # oder eigene GitLab-Instanz
         PROJECT_ID = 25330421  # Die Project-ID deines Repos
@@ -228,10 +218,57 @@ class Map():
             file_data = project.files.get(file_path=FILE_PATH, ref=BRANCH)
 
             # Datei speichern
-            with open(f'{self.map_folder}/micro_regions/{region}.json', "w", encoding="utf-8") as f:
+            with open(file, "w", encoding="utf-8") as f:
                 f.write(file_data.decode().decode("utf-8"))
 
             file_data = None
+
+    def convert_coordinate_reference(self, src_path, dst_path, espg): # CHECK
+        # Ziel-Koordinatensystem (ETRS89 - EPSG:4258)
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(espg)
+
+        # Öffne die Eingabedatei
+        driver = ogr.GetDriverByName('GeoJSON')
+        src_file = driver.Open(src_path, 0)  # 0 bedeutet nur Lesen
+        src_layer = src_file.GetLayer()
+
+        # Hole das Quell-Koordinatensystem
+        src_srs = src_layer.GetSpatialRef()
+
+        # Erstelle die Ausgabedatei (GeoJSON)
+        dst_file = driver.CreateDataSource(dst_path)
+        dst_layer = dst_file.CreateLayer('transformed_layer', srs=src_srs)
+
+        # Transformationseinrichtung
+        coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
+
+        # Kopiere Features und transformiere Geometrien
+        for feature in src_layer:
+            geom = feature.GetGeometryRef()
+            geom.Transform(coord_trans)  # Transformation der Geometrie
+            dst_layer.CreateFeature(feature)  # Speichern der transformierten Geometrie
+
+        # Schließe die Datenquellen
+        src_file = None
+        dst_file = None
+
+        print(f"Die GeoJSON-Datei wurde erfolgreich in das neue Koordinatensystem umgewandelt und unter {dst_path} gespeichert.")
+
+    def createAvalancheReportLayersTYRL(self):
+
+        regions = ["AT-07", 'IT-32-BZ', 'IT-32-TN']
+        self.pull_avalanche_report(f'{self.map_folder}/avalanche_report/report.json', "https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.json")
+        self.pull_microregions(regions)
+        for region in regions:
+            self.convert_json_coordinate_reference(f'{self.map_folder}/micro_regions/{region}.json', f'{self.map_folder}/micro_regions/{region}_espg2056.json', 2056)
+        self.create_avalanche_report_summary2(f'{self.map_folder}/avalanche_report/report.json', f'{self.map_folder}/avalanche_report/report_summary.json')
+        self.create_geotif_report_features(regions, f'{self.map_folder}/avalanche_report/report_geometry.json')
+        self.burn_geometries_in_raster(f'{self.map_folder}/{Layers.HEIGHT.value}', f'{self.map_folder}/{Layers.AVALANCHE_REPORT_MASK.value}', f'{self.map_folder}/avalanche_report/report_geometry.json')
+        file = gdal.Open(f'{self.map_folder}/avalanche_report/avalanche_report_mask.tif')
+        array = file.ReadAsArray()
+        pyplot.imshow(array)
+        pyplot.show()
 
     def create_avalanche_report_summary2(self, src_path, dst_path):
 
@@ -337,49 +374,6 @@ class Map():
         self.create_avalanche_report_summary(f'{self.map_folder}/avalanche_report/report_espg2056.json', f'{self.map_folder}/avalanche_report/report_summary.json')
         self.burn_geometries_in_raster(f'{self.map_folder}/{Layers.HEIGHT.value}', f'{self.map_folder}/{Layers.AVALANCHE_REPORT_MASK.value}', f'{self.map_folder}/avalanche_report/report_espg2056.json')
         self.create_avalanche_report_layers()
-
-    def pull_avalanche_report(self, file, url):
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            writeFile = open(file, 'w+', encoding='utf-8')
-            json.dump(data, writeFile, ensure_ascii=False, indent=4)
-            writeFile.close()
-            print('Downloaded avalanche report')
-        else:
-            print('Download of avalanche report doesn\'t work')
-
-    def convert_json_coordinate_reference(self, src_path, dst_path, espg):
-        # Ziel-Koordinatensystem (ETRS89 - EPSG:4258)
-        dst_srs = osr.SpatialReference()
-        dst_srs.ImportFromEPSG(espg)
-
-        # Öffne die Eingabedatei
-        driver = ogr.GetDriverByName('GeoJSON')
-        src_file = driver.Open(src_path, 0)  # 0 bedeutet nur Lesen
-        src_layer = src_file.GetLayer()
-
-        # Hole das Quell-Koordinatensystem
-        src_srs = src_layer.GetSpatialRef()
-
-        # Erstelle die Ausgabedatei (GeoJSON)
-        dst_file = driver.CreateDataSource(dst_path)
-        dst_layer = dst_file.CreateLayer('transformed_layer', srs=src_srs)
-
-        # Transformationseinrichtung
-        coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
-
-        # Kopiere Features und transformiere Geometrien
-        for feature in src_layer:
-            geom = feature.GetGeometryRef()
-            geom.Transform(coord_trans)  # Transformation der Geometrie
-            dst_layer.CreateFeature(feature)  # Speichern der transformierten Geometrie
-
-        # Schließe die Datenquellen
-        src_file = None
-        dst_file = None
-
-        print(f"Die GeoJSON-Datei wurde erfolgreich in das neue Koordinatensystem umgewandelt und unter {dst_path} gespeichert.")
 
     def create_avalanche_report_summary(self, src_path, dst_path):
 
@@ -613,13 +607,109 @@ class Map():
             band.FlushCache()
             band.ComputeStatistics(False)
 
+##### CALCULATE #####
+
+    def calculateLayer(self, layertype):
+        layerCalculator = self.layerCalculatorFactory.get_calculator(layertype)
+        
+        layers = self.get_required_layers_dict(layerCalculator.required_layers)
+        
+        start = time.time()
+        layer_arrays = layerCalculator.calculate(layers)
+        ende = time.time()
+        print(f'[LOG] Berechnungzeit {layertype}: {round(ende-start, 2)}s')
+
+        self.save_layer(layertype, layer_arrays)
+
+    def get_required_layers_dict(self, required_layertypes):
+        layers_dict = {}
+        for required_layertype in required_layertypes:
+            required_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{required_layertype.value}'
+
+            if os.path.isfile(required_layer_filepath): # layer is already available -> take the array data and copy to layers dict
+                file = gdal.Open(required_layer_filepath)
+                array = np.array(file.ReadAsArray(), dtype=np.float32)
+                layers_dict[required_layertype] = array
+                file = None
+            else: # layer is not available -> recurive execution of calculateLayer() for the neccessary layer
+                if type(required_layertype) == Layers: # layertype != preprocessed data
+                    self.calculateLayer(required_layertype)
+                else: # layertype == preprocessed data
+                    self.calculateLayer(type(required_layertype))
+                file = gdal.Open(required_layer_filepath)
+                array = np.array(file.ReadAsArray(), dtype=np.float32)
+                layers_dict[required_layertype] = array
+                file = None
+        return layers_dict
+
+    def save_layer(self, layertypes, layer_arrays):
+        if type(layertypes) == Layers: # layertype != preprocessed data
+            layertypes = [layertypes]
+            layer_arrays = [layer_arrays]
+
+        for i, layertype in enumerate(layertypes):
+            layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{layertype.value}'
+
+            yLength, xLength = np.shape(layer_arrays[i])
+            driver = gdal.GetDriverByName('GTiff')
+            output_raster = driver.Create(layer_filepath,
+                                          int(xLength),
+                                          int(yLength),
+                                          1,
+                                          eType = gdal.GDT_Float32)
+
+            output_raster.SetProjection(self.working_projection)
+            output_raster.SetGeoTransform(self.working_geotransform)
+            band = output_raster.GetRasterBand(1)
+            band.SetNoDataValue(-9999)
+            band.WriteArray(layer_arrays[i])          
+            band.FlushCache()
+            band.ComputeStatistics(False)
+
+        #     rows, columns = np.shape(layer_array)
+        #     driver = gdal.GetDriverByName('GTiff')
+        #     output_raster = driver.Create(f'{self.map_folder}/{layertype.value}',
+        #                                         int(columns),
+        #                                         int(rows),
+        #                                         1,
+        #                                         eType = gdal.GDT_Float32)
+
+        #     output_raster.SetProjection(self.projection)
+        #     output_raster.SetGeoTransform(self.geotransform)
+        #     band = output_raster.GetRasterBand(1)
+        #     band.SetNoDataValue(-9999)
+        #     band.WriteArray(layer_array)          
+        #     band.FlushCache()
+        #     band.ComputeStatistics(False)
+        # else: # layertype == preprocessed data
+        #     for i, l1 in enumerate(layertype):
+        #         rows, columns = np.shape(layer_array[i])
+        #         driver = gdal.GetDriverByName('GTiff')
+        #         output_raster = driver.Create(f'{self.map_folder}/{l1.value}',
+        #                                         int(columns),
+        #                                         int(rows),
+        #                                         1,
+        #                                         eType = gdal.GDT_Float32)
+
+        #         output_raster.SetProjection(self.projection)
+        #         output_raster.SetGeoTransform(self.geotransform)
+        #         band = output_raster.GetRasterBand(1)
+        #         band.SetNoDataValue(-9999)
+        #         band.WriteArray(layer_array[i])          
+        #         band.FlushCache()
+        #         band.ComputeStatistics(False)
+
+##### SHOW #####
+
     def showLayer(self, layertypes):
 
         fig = pyplot.figure(figsize=(10, 8))
 
         for i, layertype in enumerate(layertypes):
+            layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{layertype.value}'
+
             ax = fig.add_subplot(1, len(layertypes), i+1)
-            file = gdal.Open(f'{self.map_folder}/{layertype.value}')
+            file = gdal.Open(layer_filepath)
             layer_array = file.ReadAsArray()
             ax.imshow(layer_array, cmap = 'viridis', extent=[660000, 670000, 5270000, 5280000])
             minn = layer_array.min()
@@ -630,7 +720,9 @@ class Map():
             pyplot.colorbar(m, ax=ax, orientation="horizontal")
         pyplot.show()
 
-    def show3D(self, layertypes, heightmaps, cmaps, values, area):
+    def show3D(self, layertypes, cmaps, values, area):
+
+        height_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/height.tif'
 
         fig = pyplot.figure(figsize=(10, 8))
 
@@ -639,24 +731,25 @@ class Map():
         X,Y = np.meshgrid(x, y)
 
         for i, layertype in enumerate(layertypes):
-                    file = gdal.Open(f'{self.map_folder}/{layertype.value}')
-                    layer_array = file.ReadAsArray()
-                    color_dimension = np.copy(layer_array[area[0]:area[0]+area[2], area[1]:area[1]+area[3]])
-                    minn = values[i][0]
-                    maxx = values[i][1]
-                    if minn == None:
-                        minn = color_dimension.min()
-                    if maxx == None:
-                        maxx = color_dimension.max()
-                    norm = Normalize(minn, maxx)
-                    m = pyplot.cm.ScalarMappable(norm=norm, cmap=cmaps[i])
-                    m.set_array([])
-                    fcolor = m.to_rgba(color_dimension)
+            layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{layertype.value}'
+            file = gdal.Open(layer_filepath)
+            layer_array = file.ReadAsArray()
+            color_dimension = np.copy(layer_array[area[0]:area[0]+area[2], area[1]:area[1]+area[3]])
+            minn = values[i][0]
+            maxx = values[i][1]
+            if minn == None:
+                minn = color_dimension.min()
+            if maxx == None:
+                maxx = color_dimension.max()
+            norm = Normalize(minn, maxx)
+            m = pyplot.cm.ScalarMappable(norm=norm, cmap=cmaps[i])
+            m.set_array([])
+            fcolor = m.to_rgba(color_dimension)
                     
-                    ax = fig.add_subplot(1, len(layertypes), i+1, projection='3d')
-                    file = gdal.Open(f'{self.map_folder}/{heightmaps[i].value}')
-                    height_array = file.ReadAsArray()
-                    Z = height_array[area[0]:area[0]+area[2], area[1]:area[1]+area[3]]
-                    ax.plot_surface(X, Y, Z, facecolors=fcolor)
-                    pyplot.colorbar(m, ax=ax, orientation="horizontal")
+            ax = fig.add_subplot(1, len(layertypes), i+1, projection='3d')
+            file = gdal.Open(height_layer_filepath)
+            height_array = file.ReadAsArray()
+            Z = height_array[area[0]:area[0]+area[2], area[1]:area[1]+area[3]]
+            ax.plot_surface(X, Y, Z, facecolors=fcolor)
+            pyplot.colorbar(m, ax=ax, orientation="horizontal")
         pyplot.show()

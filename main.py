@@ -1,7 +1,7 @@
 import src.zevenbergen_calculators as zevenbergen_calculators
 from src.layer_calculator_factory import LayerCalculatorFactory
 from src.layers import Layers
-from src.map import Map
+from src.map import Map, Region
 
 
 if __name__ == "__main__":
@@ -19,12 +19,13 @@ if __name__ == "__main__":
     zevenbergen_calculator_factory.register_calculator(Layers.AVALANCHE_RISK, zevenbergen_calculators.CalculatorAvalancheRisk)
 
     map = Map(zevenbergen_calculator_factory)
-    map.register_new_map('data_raw/DGM_Deutschland', 'data_layer/data_deutschland', False)
-    # map.register_existing_map('data')
+    #map.register_new()
+    #map.set_working_region(Region.BAVARIA)
+    map.pull_new()
 
-    map.calculateLayer(Layers.DIRECTION_LEVEL)
+    # map.calculateLayer(Layers.DIRECTION_LEVEL)
 
     # map.createAvalancheReportLayersTYRL()
 
-    map.showLayer([Layers.HEIGHT, Layers.DIRECTION_LEVEL])
-    map.show3D([Layers.SHAPE], [Layers.HEIGHT], ['viridis', 'viridis', 'Set1', 'viridis'], [(None, None)], (3050, 2200, 100, 100))
+    # map.showLayer([Layers.HEIGHT, Layers.DIRECTION_LEVEL])
+    # map.show3D([Layers.DIRECTION_LEVEL], ['viridis', 'viridis', 'Set1', 'viridis'], [(None, None)], (3050, 2200, 100, 100))
