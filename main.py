@@ -19,8 +19,8 @@ if __name__ == "__main__":
     zevenbergen_calculator_factory.register_calculator(Layers.AVALANCHE_RISK, zevenbergen_calculators.CalculatorAvalancheRisk)
 
     map = Map(zevenbergen_calculator_factory)
-    #map.register_new()
-    #map.set_working_region(Region.BAVARIA)
+    map.register_new()
+    map.set_working_region(Region.BAVARIA)
     map.pull_new()
 
     # map.calculateLayer(Layers.DIRECTION_LEVEL)
