@@ -27,14 +27,14 @@ class Map():
 
         self.working_projection = None
         self.working_geotransform = None
+        self.working_srs = None
 
-        self.avalanche_report_url = {Region.BAVARIA : 'https://static.lawinen-warnung.eu/bulletins/2025-04-02/2025-04-02_DE-BY_de_CAAMLv6.xml', #aktueller tag!!!!!!!!!!!!!
+        self.avalanche_report_url = {Region.BAVARIA : 'https://static.lawinen-warnung.eu/bulletins/latest/DE-BY_de_CAAMLv6.xml', #aktueller tag!!!!!!!!!!!!!
                                      Region.SWITZERLAND : "https://aws.slf.ch/api/bulletin/caaml/v4/de/geojson",
-                                     Region.TYROL : "https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.json"}
-        
+                                     Region.TYROL : "https://static.avalanche.report/bulletins/2025-04-04/2025-04-04_EUREGIO_de_CAAMLv6.xml"}#https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.xml
         self.avalanche_report_microregions = {Region.BAVARIA : ['DE-BY'],
                              Region.SWITZERLAND : None,
-                             Region.TYROL : ["AT-07", 'IT-32-BZ', 'IT-32-TN']}
+                             Region.TYROL : ['AT-07', 'IT-32-BZ', 'IT-32-TN']}
 
         self.layerCalculatorFactory = layerCalculatorFactory
         
@@ -59,7 +59,7 @@ class Map():
                     self.cut_1_edge(f'{self.layer_data_directory}/{region_directory}/height.tif')
 
                 if region == Region.TYROL or region == Region.SWITZERLAND:
-                    self.downscale_tif_file(f'{self.layer_data_directory}/height.tif', 2)
+                    self.downscale_tif_file(f'{self.layer_data_directory}/{region_directory}/height.tif', 2)
 
     def cut_1_edge(self, path): # CHECK
         
@@ -68,7 +68,7 @@ class Map():
         geotransform = file.GetGeoTransform()
         projektion = file.GetProjection()
         file = None
-        new_array = np.copy(layer_array[0:2000, 0:2500])
+        new_array = np.copy(layer_array[0:20000, 0:20000])
         rows, columns = np.shape(new_array)
 
         driver = gdal.GetDriverByName('GTiff')
@@ -116,8 +116,6 @@ class Map():
         
         driver = gdal.GetDriverByName('GTiff')
         rows, columns = np.shape(array)
-        print(rows)
-        print(columns)
 
         output_raster = driver.Create(path,
                                         int(columns),
@@ -148,12 +146,16 @@ class Map():
             file = gdal.Open(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif')
             self.working_geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
             self.working_projection = str(file.GetProjection())
+            self.working_srs = file.GetSpatialRef()
+
             file = None
 
 ##### PULL AVALANCHE REPORT #####
 
     def pull_new(self): # in einzelne funktionen für jede region umwandeln und in register_new() aufrufen TODO
         for region in Region:
+            if region in [Region.BAVARIA, Region.TYROL]:
+                self.set_working_region(region)
             region_directory = region.value
 
             #os.makedirs(f'{self.layer_data_directory}/{region_directory}/micro_regions')
@@ -164,15 +166,15 @@ class Map():
             if region in [Region.BAVARIA, Region.TYROL]:
                 microregions_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions.json'
                 self.pull_microregions(microregions_filepath, self.avalanche_report_microregions[region])
-                microregions_espg2056_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions_espg2056.json'
-                self.convert_coordinate_reference(microregions_filepath, microregions_espg2056_filepath, 2056)
+                microregions_converted_espg_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions_converted_espg.json'
+                self.convert_coordinate_reference(microregions_filepath, microregions_converted_espg_filepath)
 
             # Pull Avalanche Report
             avalanche_report_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/raw_avalanche_report'
             standardized_avalanche_report_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/standardized_avalanche_report.json'
-            if region == Region.BAVARIA:
+            if region == Region.BAVARIA or region == Region.TYROL:
                 self.download_avalanche_report_xml(f'{avalanche_report_filepath}.xml', self.avalanche_report_url[region])
-                self.create_standardized_avalanche_report_bavaria(f'{avalanche_report_filepath}.xml', standardized_avalanche_report_filepath, microregions_espg2056_filepath)
+                self.create_standardized_avalanche_report_CAAMLV6(f'{avalanche_report_filepath}.xml', standardized_avalanche_report_filepath, microregions_converted_espg_filepath)
             else:
                 self.download_avalanche_report_json(f'{avalanche_report_filepath}.json', self.avalanche_report_url[region])
                 #if region == Region.TYROL:
@@ -180,11 +182,9 @@ class Map():
                 #elif region == Region.SWITZERLAND:
                     #self.create_standardized_avalanche_report_switzerland(f'{avalanche_report_filepath}.json', standardized_avalanche_report_filepath)
             
-            if region != Region.BAVARIA:
-                continue
-            
-            avalanche_report_base_layer_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/avalanche_report_region_layer.tif'
-            self.burn_geometries_in_raster(f'{self.layer_data_directory}/{region_directory}/height.tif', avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
+            if region == Region.BAVARIA or region == Region.TYROL:
+                avalanche_report_base_layer_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/avalanche_report_region_layer.tif'
+                self.burn_geometries_in_raster(f'{self.layer_data_directory}/{region_directory}/height.tif', avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
     
     def download_avalanche_report_xml(self, file, url): # CHECK
         response = requests.get(url)
@@ -225,28 +225,41 @@ class Map():
             # Datei herunterladen
             file_data = project.files.get(file_path=FILE_PATH, ref=BRANCH)
 
-            # Datei speichern
-            with open(file, "w", encoding="utf-8") as f:
-                f.write(file_data.decode().decode("utf-8"))
+            if os.path.exists(file):
+                data = file_data.decode()
+                data = json.loads(data)
+                new_features = data['features']
+                with open(file, "r") as f:
+                    f = json.load(f)
+                    features = f['features']
+                    for new_feature in new_features:
+                        features.append(new_feature)
+                    f['features'] = features
+                with open(file, "w") as w:
+                    json.dump(f, w, ensure_ascii=False, indent=4)
+            else:
+                with open(file, "wb") as f:
+                    f.write(file_data.decode())
 
             file_data = None
 
-    def convert_coordinate_reference(self, src_path, dst_path, espg): # CHECK
-        # Ziel-Koordinatensystem (ETRS89 - EPSG:4258)
-        dst_srs = osr.SpatialReference()
-        dst_srs.ImportFromEPSG(espg)
+    def convert_coordinate_reference(self, src_path, dst_path): # CHECK
 
-        # Öffne die Eingabedatei
+        # Ziel SRS
+        dst_srs = osr.SpatialReference()
+        dst_srs = self.working_srs
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
+
+        # Quell SRS
         driver = ogr.GetDriverByName('GeoJSON')
         src_file = driver.Open(src_path, 0)  # 0 bedeutet nur Lesen
         src_layer = src_file.GetLayer()
-
-        # Hole das Quell-Koordinatensystem
         src_srs = src_layer.GetSpatialRef()
+        src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
         # Erstelle die Ausgabedatei (GeoJSON)
         dst_file = driver.CreateDataSource(dst_path)
-        dst_layer = dst_file.CreateLayer('transformed_layer', srs=src_srs)
+        dst_layer = dst_file.CreateLayer('transformed_layer', srs=dst_srs)
 
         # Transformationseinrichtung
         coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
@@ -255,6 +268,7 @@ class Map():
         for feature in src_layer:
             geom = feature.GetGeometryRef()
             geom.Transform(coord_trans)  # Transformation der Geometrie
+
             dst_layer.CreateFeature(feature)  # Speichern der transformierten Geometrie
 
         # Schließe die Datenquellen
@@ -273,12 +287,8 @@ class Map():
         driver = ogr.GetDriverByName("Memory")
         data_source = driver.CreateDataSource("Memory")
 
-        # Erstelle ein Spatial Reference Objekt für LV95
-        srs = osr.SpatialReference()
-        srs.ImportFromEPSG(2056)
-
         # Erstelle eine Layer für die Geometrien
-        layer = data_source.CreateLayer("geometry_layer", srs= srs,geom_type=ogr.wkbPolygon)
+        layer = data_source.CreateLayer("geometry_layer", srs= self.working_srs,geom_type=ogr.wkbPolygon)
 
         # Iteriere über die Features und füge die Geometrien zum Layer hinzu
         for feature in input_layer:
@@ -287,9 +297,6 @@ class Map():
                 ogr_feature = ogr.Feature(feature_def)
                 ogr_feature.SetGeometry(geom)
                 layer.CreateFeature(ogr_feature)
-
-        # # DEBUG
-        # print(f"Anzahl der Geometrien: {layer.GetFeatureCount()}")
 
         src_file = gdal.Open(src_raster_path)
 
@@ -328,7 +335,7 @@ class Map():
     # 03 Gefahrenmuster: [Mustertyp], ..
     # 04 Regionen
 
-    def create_standardized_avalanche_report_bavaria(self, src_file, dst_file, micro_region_file): # TODO
+    def create_standardized_avalanche_report_CAAMLV6(self, src_file, dst_file, micro_region_file): # TODO
         tag_prefix = '{http://caaml.org/Schemas/V6.0/Profiles/BulletinEAWS}'
         tree = ET.parse(src_file)
         root = tree.getroot()
@@ -341,19 +348,26 @@ class Map():
                 main_value = danger_rating.find(f'{tag_prefix}mainValue')
                 main_value = main_value.text
                 elevation = danger_rating.find(f'{tag_prefix}elevation')
-                lower_bound = elevation.find(f'{tag_prefix}lowerBound')
-                upper_bound = elevation.find(f'{tag_prefix}upperBound')
-                if lower_bound != None:
-                    lower_bound = lower_bound.text
+                if elevation != None:
+                    lower_bound = elevation.find(f'{tag_prefix}lowerBound')
+                    upper_bound = elevation.find(f'{tag_prefix}upperBound')
+                    if lower_bound != None:
+                        lower_bound = lower_bound.text
+                    else:
+                        lower_bound = None
+                    if upper_bound != None:
+                        upper_bound = upper_bound.text
+                    else:
+                        upper_bound = None
                 else:
                     lower_bound = None
-                if upper_bound != None:
-                    upper_bound = upper_bound.text
-                else:
                     upper_bound = None
+                time_slot = danger_rating.find(f'{tag_prefix}validTimePeriod')
+                time_slot = time_slot.text
                 danger = {'main_value' : main_value,
                           'lower_bound' : lower_bound,
-                          'upper_bound' : upper_bound}
+                          'upper_bound' : upper_bound,
+                          'time_slot' : time_slot}
                 dangers.append(danger)
 
             # Get avalanche problem properties
@@ -375,10 +389,13 @@ class Map():
                 aspects = []
                 for aspect in avalanche_problem.findall(f'{tag_prefix}aspect'):
                     aspects.append(aspect.text)
+                time_slot = avalanche_problem.find(f'{tag_prefix}validTimePeriod')
+                time_slot = time_slot.text
                 problem = {'type' : problem_type,
                            'lower_bound' : lower_bound,
                            'upper_bound' : upper_bound,
-                           'aspects' : aspects}
+                           'aspects' : aspects,
+                           'time_slot' : time_slot}
                 problems.append(problem)
             
             # Get region properties
@@ -386,7 +403,7 @@ class Map():
             for region in bulletin.findall(f'{tag_prefix}region'):
                 region_id = region.get('regionID')
                 regions.append(region_id)
-
+            
             # Convert region_ids to polygones
             microregion_data = None
             file = open(micro_region_file, "r", encoding="utf-8")
@@ -396,9 +413,14 @@ class Map():
             self.layer_data_directory = 'layer_data'
             self.working_region_directory = None
             
+            
+
             polygones = []
-            for micro_region in microregion_data['features']:
+            mr = microregion_data['features']
+            for micro_region in mr:
                 if micro_region['properties']['id'] in regions:
+                    if 'end_date' in micro_region['properties'] and micro_region['properties']['end_date'] != None:
+                        continue
                     for polygon in micro_region['geometry']['coordinates']:
                         polygones.append(polygon)
 
@@ -412,10 +434,14 @@ class Map():
                                          'coordinates' : polygones}}
             features.append(feature)
         
+        file = open(micro_region_file, "r", encoding="utf-8")
+        microregion_data = json.load(file)
+        file.close()
+        crs = microregion_data['crs']['properties']['name']
         # Create GeoJSON structure
         standardized_avalanche_report_dict = {"type": "FeatureCollection",
                                               "name": "IT-32-TN_micro-regions",
-                                              "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
+                                              "crs": { "type": "name", "properties": { "name": crs } },
                                               "features": features}
     
         with open(dst_file, 'w') as f:
