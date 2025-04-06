@@ -25,19 +25,31 @@ class Map():
 
         self.layer_data_directory = 'layer_data'
         self.input_data_directory = 'input_data'
+        
         self.working_region = None
         self.working_region_directory = None
 
+        self.height_layer_path = None
+        self.avalanche_report_region_layer_path = None
+
+        self.microregions_path = None
+
+        self.standardized_avalanche_report_path = None
+        self.raw_avalanche_report_path = None
+
+        self.working_x_length = None
+        self.working_y_length = None
         self.working_projection = None
         self.working_geotransform = None
         self.working_srs = None
 
-        self.avalanche_report_url = {Region.BAVARIA : 'https://static.lawinen-warnung.eu/bulletins/latest/DE-BY_de_CAAMLv6.xml', #aktueller tag!!!!!!!!!!!!!
+        self.avalanche_report_url = {Region.BAVARIA : 'https://static.lawinen-warnung.eu/bulletins/2025-04-04/2025-04-04_DE-BY_de_CAAMLv6.xml', #aktueller tag!!!!!!!!!!!!!
                                      Region.SWITZERLAND : "https://aws.slf.ch/api/bulletin/caaml/v4/de/geojson",
                                      Region.TYROL : "https://static.avalanche.report/bulletins/2025-04-04/2025-04-04_EUREGIO_de_CAAMLv6.xml"}#https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.xml
+        
         self.avalanche_report_microregions = {Region.BAVARIA : ['DE-BY'],
-                             Region.SWITZERLAND : None,
-                             Region.TYROL : ['AT-07', 'IT-32-BZ', 'IT-32-TN']}
+                                              Region.SWITZERLAND : None,
+                                              Region.TYROL : ['AT-07', 'IT-32-BZ', 'IT-32-TN']}
 
         self.layerCalculatorFactory = layerCalculatorFactory
 
@@ -45,141 +57,148 @@ class Map():
 
     def register_new_data(self):
         self.delete_layer_data()
-
         for region in Region: # loop through all supported regions
             self.set_working_region(region)
             self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}')
-        
             self.preprocess_dgm()
-
-            self.set_working_region(region)
-
+            self.set_tif_properties()
             self.preprocess_avalanche_report()
 
     def set_working_region(self, region):
-        if isinstance(region, Region):
-            self.working_region = region
-            self.working_region_directory = region.value
+        self.working_region = region
+        self.working_region_directory = region.value
+        
+        self.height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layers.HEIGHT.value}'
+        self.avalanche_report_region_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/avalanche_report_region.tif'
+        
+        self.microregions_path = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions.geojson'
+        
+        self.standardized_avalanche_report_path = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report.json'
+        self.raw_avalanche_report_path = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/raw_avalanche_report'
+        if region == Region.SWITZERLAND:
+            self.raw_avalanche_report_path = f'{self.raw_avalanche_report_path}.json'
+        elif region == Region.BAVARIA or region == Region.TYROL:
+            self.raw_avalanche_report_path = f'{self.raw_avalanche_report_path}.xml'
 
-            if os.path.exists(f'{self.layer_data_directory}/{self.working_region.value}/height.tif'):
-            # set working geotransform & projection
-                file = gdal.Open(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif')
-                self.working_geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
-                self.working_projection = str(file.GetProjection())
-                self.working_srs = file.GetSpatialRef()
+        if os.path.exists(self.height_layer_path):
+            self.set_tif_properties()
 
-                file = None
+    def set_tif_properties(self):
+        array, geotransform, projection, srs = self.get_tif_data(self.height_layer_path)
+        self.working_x_length = array.shape[1]
+        self.working_y_length = array.shape[0]
+        self.working_geotransform = geotransform
+        self.working_projection = projection
+        self.working_srs = srs
 
 ##### DIRECTORY MANAGEMENT #####
 
-    def delete_layer_data(self):
+    def delete_layer_data(self): # DONE
         if os.path.exists(self.layer_data_directory) and os.path.isdir(self.layer_data_directory):
                 shutil.rmtree(self.layer_data_directory)
 
-    def create_directory(self, path): # ?
-        os.makedirs(path)
-
-    def input_data_available(self):
-        input_data_path = f'{self.input_data_directory}/{self.working_region_directory}'
-        return os.path.isdir(input_data_path) and len(os.listdir(input_data_path)) > 0
-        
-##### DGM PREPROCESS STUFF #####
-
-    def preprocess_dgm(self):
-        if self.input_data_available():
-            self.create_height_layer()
-            self.standardize_height_layer()
-    
-    def create_height_layer(self):
-        height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layers.HEIGHT.value}'
-
-        tif_files = glob.glob(f'{self.input_data_directory}/{self.working_region_directory}/*.tif') # get list of all hight_layers in input_data/region folder
-        gdal.Warp(height_layer_path, tif_files, format="GTiff", srcNodata=-9999, dstNodata=-9999) # join all hight_layers to one big height_layer
-
-    def standardize_height_layer(self):
-        height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layers.HEIGHT.value}'
-
-        # extra editing for uniform height_layer
-        if self.working_region == Region.TYROL:
-            self.cut_edge_layer(height_layer_path) # cut edge row/column
-            self.downscale_layer(height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
-        elif self.working_region == Region.SWITZERLAND:
-            self.downscale_layer(height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
-
-    def cut_edge_layer(self, path): # CHECK
-        
-        file = gdal.Open(path)
-        layer_array = file.ReadAsArray()
-        geotransform = file.GetGeoTransform()
-        projektion = file.GetProjection()
-        file = None
-        new_array = np.copy(layer_array[0:20000, 0:20000])
-        rows, columns = np.shape(new_array)
-
-        driver = gdal.GetDriverByName('GTiff')
-
+    def delete_file(self, path): # DONE
         os.remove(path)
 
-        output_raster = driver.Create(path,
-                                            int(columns),
-                                            int(rows),
-                                            1,
-                                            eType = gdal.GDT_Float32)
+    def create_directory(self, path): # DONE
+        os.makedirs(path)
 
-        output_raster.SetProjection(projektion)
-        output_raster.SetGeoTransform(geotransform)
+    def input_data_available(self): # DONE
+        input_data_path = f'{self.input_data_directory}/{self.working_region_directory}'
+        return os.path.isdir(input_data_path) and len(os.listdir(input_data_path)) > 0
 
-        band = output_raster.GetRasterBand(1)
-        band.SetNoDataValue(-9999)
-        band.WriteArray(new_array)          
-        band.FlushCache()
-        band.ComputeStatistics(False)
+##### TIF/JSON HANDLING FUNKTIONS #####
 
-    def downscale_layer(self, path, scale_factor): # CHECK
+    def get_tif_data(self, path): # DONE
         file = gdal.Open(path)
-        array = np.array(file.ReadAsArray(), dtype=np.float32)
-        projektion = file.GetProjection()
+        array = file.ReadAsArray()
         geotransform = file.GetGeoTransform()
+        projection = file.GetProjection()
+        srs = file.GetSpatialRef()
         file = None
+        return array, geotransform, projection, srs
 
-        def downscale_array(arr):
-            h, w = arr.shape
-            assert h % 2 == 0 and w % 2 == 0, "Die Array-Dimensionen müssen durch 2 teilbar sein!"
-            downscaled = arr.reshape(h//2, 2, w//2, 2).mean(axis=(1, 3))
-            return downscaled
-        
-        def scale_transform(transform, scale_factor):
-            return (transform[0],
-                    transform[1]*scale_factor,
-                    transform[2],
-                    transform[3],
-                    transform[4],
-                    transform[5]*scale_factor)
-
-        geotransform = scale_transform(geotransform, scale_factor)
-        array = downscale_array(array)
-        
+    def create_tif(self, path, array, geotransform, projection): # DONE
         driver = gdal.GetDriverByName('GTiff')
-        rows, columns = np.shape(array)
 
-        output_raster = driver.Create(path,
-                                        int(columns),
-                                        int(rows),
-                                        1,
-                                        eType = gdal.GDT_Float32)
+        y_length, x_length = array.shape
 
-        output_raster.SetProjection(projektion)
-        output_raster.SetGeoTransform(geotransform)
+        raster = driver.Create(path,
+                                      x_length,
+                                      y_length,
+                                      1,
+                                      eType = gdal.GDT_Float32)
 
-        band = output_raster.GetRasterBand(1)
+        raster.SetProjection(projection)
+        raster.SetGeoTransform(geotransform)
+
+        band = raster.GetRasterBand(1)
         band.SetNoDataValue(-9999)
         band.WriteArray(array)          
         band.FlushCache()
         band.ComputeStatistics(False)
 
+    def get_geojson_data(self, path): # DONE
+        file = gdal.OpenEx(path, 0)
+        layer = file.GetLayer()
+
+        srs = layer.GetSpatialRef()
+        features = []
+        for feature in layer:
+            features.append(feature)
+
+        file = None
+
+        return features, srs
+
+    def create_geojson(self, path, name, srs, feature_list): # DONE
+        driver = ogr.GetDriverByName('GeoJSON')
+        file = driver.CreateDataSource(path)
+        layer = file.CreateLayer(name, srs=srs)
+        for feature in feature_list:
+            layer.CreateFeature(feature)
+        file = None
+
+##### DGM PREPROCESS STUFF #####
+
+    def preprocess_dgm(self): # DONE
+        if self.input_data_available():
+            self.create_height_layer()
+            self.standardize_height_layer()
+    
+    def create_height_layer(self): # DONE
+        tif_files = glob.glob(f'{self.input_data_directory}/{self.working_region_directory}/*.tif') # get list of all hight_layers in input_data/region folder
+        gdal.Warp(self.height_layer_path, tif_files, format="GTiff", srcNodata=-9999, dstNodata=-9999) # join all hight_layers to one big height_layer
+
+    def standardize_height_layer(self): # DONE
+        if self.working_region == Region.TYROL:
+            self.cut_edge_layer(self.height_layer_path) # cut edge row/column
+            self.downscale_layer(self.height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
+        elif self.working_region == Region.SWITZERLAND:
+            self.downscale_layer(self.height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
+
+    def cut_edge_layer(self, path): # DONE
+        layer_array, geotransform, projection, _ = self.get_tif_data(path)
+        layer_array = layer_array[0:-1, 0:-1]
+        self.delete_file(path)
+        self.create_tif(path, layer_array, geotransform, projection)
+
+    def downscale_layer(self, path, scale_factor): # DONE
+        layer_array, geotransform, projection, _ = self.get_tif_data(path)
+        y_length, x_length = layer_array.shape
+        layer_array = layer_array.reshape(y_length//2, 2, x_length//2, 2).mean(axis=(1, 3)) # combine 4 pixels to one
+        geotransform = (geotransform[0],
+                        geotransform[1]*scale_factor,
+                        geotransform[2],
+                        geotransform[3],
+                        geotransform[4],
+                        geotransform[5]*scale_factor) # scale pixel width
+        self.delete_file(path)
+        self.create_tif(path, layer_array, geotransform, projection)
+
 ##### AVALANCHE REPORT PREPROCESS STUFF #####
 
-    def preprocess_avalanche_report(self):
+    def preprocess_avalanche_report(self): # DONE
         self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/report_data')
 
         self.create_microregion_definition()
@@ -187,189 +206,98 @@ class Map():
         self.pull_avalanche_report()
         self.standardize_avalanche_report()
 
-        avalanche_report_base_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/avalanche_report_region_layer.tif'
-        standardized_avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report.json'
-        self.burn_geometries_in_raster(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif', avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
-        self.create_danger_layer(avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
+        self.burn_geometries_in_raster()
+        self.create_danger_layer()
 
-    def create_microregion_definition(self):
+    def create_microregion_definition(self): # DONE
         if self.working_region in [Region.BAVARIA, Region.TYROL]:
-            microregions_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions.json'
-            self.pull_microregions(microregions_filepath, self.avalanche_report_microregions[self.working_region])
-            microregions_converted_espg_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions_converted_espg.json'
-            self.convert_coordinate_reference(microregions_filepath, microregions_converted_espg_filepath)
+            self.pull_microregions()
+            self.convert_geojson_srs(self.microregions_path)
 
-    def pull_avalanche_report(self):
-        avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/raw_avalanche_report'
-        if self.working_region == Region.BAVARIA or self.working_region == Region.TYROL:
-            self.download_avalanche_report_xml(f'{avalanche_report_filepath}.xml', self.avalanche_report_url[self.working_region])
-        elif self.working_region == Region.SWITZERLAND:
-            self.download_avalanche_report_json(f'{avalanche_report_filepath}.json', self.avalanche_report_url[self.working_region])
-
-    def standardize_avalanche_report(self):
-        avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/raw_avalanche_report'
-        standardized_avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report.json'
-        microregions_converted_espg_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions_converted_espg.json'
-        if self.working_region == Region.BAVARIA or self.working_region == Region.TYROL:
-            self.create_standardized_avalanche_report_CAAMLV6(f'{avalanche_report_filepath}.xml', standardized_avalanche_report_filepath, microregions_converted_espg_filepath)
-        elif self.working_region == Region.SWITZERLAND:
-            standardized_avalanche_report_wrong_epsg_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report_wrong_epsg.json'
-            self.create_standardized_avalanche_report_switzerland(f'{avalanche_report_filepath}.json', standardized_avalanche_report_wrong_epsg_filepath)
-                
-            self.convert_coordinate_reference(standardized_avalanche_report_wrong_epsg_filepath, standardized_avalanche_report_filepath)
-
-    def download_avalanche_report_xml(self, file, url): # CHECK
-        response = requests.get(url)
+    def pull_avalanche_report(self): # DONE
+        response = requests.get(self.avalanche_report_url[self.working_region])
         if response.status_code == 200:
             data = response.content
-            writeFile = open(file, 'wb')
-            writeFile.write(data)
-            writeFile.close()
-            print('Downloaded avalanche report')
+            with open(f'{self.raw_avalanche_report_path}', 'wb') as file:
+                file.write(data)
         else:
             print('Download of avalanche report doesn\'t work')
-    
-    def download_avalanche_report_json(self, file, url): # CHECK
-        response = requests.get(url)
-        if response.status_code == 200:
-            data = response.json()
-            writeFile = open(file, 'w+', encoding='utf-8')
-            json.dump(data, writeFile, ensure_ascii=False, indent=4)
-            writeFile.close()
-            print('Downloaded avalanche report')
-        else:
-            print('Download of avalanche report doesn\'t work')
+        
+    def standardize_avalanche_report(self):
+        if self.working_region == Region.BAVARIA or self.working_region == Region.TYROL:
+            self.create_standardized_avalanche_report_CAAMLV6()
+        elif self.working_region == Region.SWITZERLAND:
+            self.create_standardized_avalanche_report_switzerland()
+            self.convert_geojson_srs(self.standardized_avalanche_report_path)
             
-    def pull_microregions(self, file, regions): # CHECK TODO: umbauen das alle regionen untereinander gepackt werden TODO 
-        # GitLab URL und Access Token (PAT)
-        GITLAB_URL = "https://gitlab.com"  # oder eigene GitLab-Instanz
-        PROJECT_ID = 25330421  # Die Project-ID deines Repos
-        # GitLab API-Client initialisieren
-        gl = gitlab.Gitlab(GITLAB_URL)
+    def pull_microregions(self): # DONE
+        gl = gitlab.Gitlab("https://gitlab.com")
+        project = gl.projects.get(25330421)
 
-        # Projekt holen
-        project = gl.projects.get(PROJECT_ID)
+        for region in self.avalanche_report_microregions[self.working_region]:
+            microregion_file = project.files.get(f'public/micro-regions/{region}_micro-regions.geojson.json', 'master')
+            file_data = microregion_file.decode()
 
-        for region in regions:
-            
-            FILE_PATH = f'public/micro-regions/{region}_micro-regions.geojson.json'  # Pfad der Datei im Repository
-            BRANCH = "master"  # Oder ein anderer Branch
-            # Datei herunterladen
-            file_data = project.files.get(file_path=FILE_PATH, ref=BRANCH)
-
-            if os.path.exists(file):
-                data = file_data.decode()
-                data = json.loads(data)
-                new_features = data['features']
-                with open(file, "r") as f:
-                    f = json.load(f)
-                    features = f['features']
+            if os.path.exists(self.microregions_path): # check if microregion file already exist and add new microregion to the file
+                new_data = json.loads(file_data)
+                new_features = new_data['features']
+                with open(self.microregions_path, "r") as file:
+                    all_data = json.load(file)
+                    all_features = all_data['features']
                     for new_feature in new_features:
-                        features.append(new_feature)
-                    f['features'] = features
-                with open(file, "w") as w:
-                    json.dump(f, w, ensure_ascii=False, indent=4)
-            else:
-                with open(file, "wb") as f:
-                    f.write(file_data.decode())
+                        all_features.append(new_feature)
+                    all_data['features'] = all_features
+                with open(self.microregions_path, "w") as file:
+                    json.dump(all_data, file, ensure_ascii=False, indent=4)
+            else: # just save data - iteration 0
+                with open(self.microregions_path, "wb") as file:
+                    file.write(file_data)
 
-            file_data = None
-
-    def convert_coordinate_reference(self, src_path, dst_path): # CHECK
-
-        # Ziel SRS
-        dst_srs = osr.SpatialReference()
-        dst_srs = self.working_srs
-        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
-
-        # Quell SRS
-        driver = ogr.GetDriverByName('GeoJSON')
-        src_file = driver.Open(src_path, 0)  # 0 bedeutet nur Lesen
-        src_layer = src_file.GetLayer()
-        src_srs = src_layer.GetSpatialRef()
+    def convert_geojson_srs(self, path): # DONE
+        src_features, src_srs = self.get_geojson_data(path)
         src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-        # Erstelle die Ausgabedatei (GeoJSON)
-        dst_file = driver.CreateDataSource(dst_path)
-        dst_layer = dst_file.CreateLayer('transformed_layer', srs=dst_srs)
+        dst_srs = self.working_srs # srs of tif
+        dst_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
-        # Transformationseinrichtung
-        coord_trans = osr.CoordinateTransformation(src_srs, dst_srs)
+        coordinates_transformation = osr.CoordinateTransformation(src_srs, dst_srs)
+        
+        dst_features = []
+        for src_feature in src_features:
+            src_feature.GetGeometryRef().Transform(coordinates_transformation) # transform geometry to dst srs
 
-        # Kopiere Features und transformiere Geometrien
-        for feature in src_layer:
-            geom = feature.GetGeometryRef()
-            geom.Transform(coord_trans)  # Transformation der Geometrie
+            dst_features.append(src_feature)
+        
+        self.delete_file(path)
+        self.create_geojson(path, 'test', dst_srs, dst_features)
 
-            dst_layer.CreateFeature(feature)  # Speichern der transformierten Geometrie
+    def burn_geometries_in_raster(self): # DONE
 
-        # Schließe die Datenquellen
-        src_file = None
-        dst_file = None
-
-        print(f"Die GeoJSON-Datei wurde erfolgreich in das neue Koordinatensystem umgewandelt und unter {dst_path} gespeichert.")
-
-    def burn_geometries_in_raster(self, src_raster_path, dst_raster_path, geojason_path): #CHECK
-
-        driver = ogr.GetDriverByName('GeoJSON')
-        geojason_file = driver.Open(geojason_path, 0)  # 0 bedeutet nur Lesen
-        input_layer = geojason_file.GetLayer()
-
-        # Erstelle ein OGR Memory-Dataset
-        driver = ogr.GetDriverByName("Memory")
-        data_source = driver.CreateDataSource("Memory")
-
-        # Erstelle eine Layer für die Geometrien
-        layer = data_source.CreateLayer("geometry_layer", srs= self.working_srs,geom_type=ogr.wkbPolygon)
-
-        # Iteriere über die Features und füge die Geometrien zum Layer hinzu
-        for feature in input_layer:
-                geom = feature.GetGeometryRef()
-                feature_def = layer.GetLayerDefn()
-                ogr_feature = ogr.Feature(feature_def)
-                ogr_feature.SetGeometry(geom)
-                layer.CreateFeature(ogr_feature)
-
-        src_file = gdal.Open(src_raster_path)
-
-        rows, column = np.shape(src_file.ReadAsArray())
+        features, srs = self.get_geojson_data(self.standardized_avalanche_report_path)
 
         driver = gdal.GetDriverByName('GTiff')
-        mask_raster = driver.Create(dst_raster_path,
-                                        int(column),
-                                        int(rows),
+        mask_raster = driver.Create(self.avalanche_report_region_layer_path,
+                                        self.working_x_length,
+                                        self.working_y_length,
                                         1,
                                         eType = gdal.GDT_Float32)
         mask_raster.SetProjection(self.working_projection)
         mask_raster.SetGeoTransform(self.working_geotransform)
 
-        #gdal.RasterizeLayer(mask_raster, [1], layer, burn_values=[1], options=[""])
-        for feature in layer:
-            temp_ds = ogr.GetDriverByName("Memory").CreateDataSource("")  # Temporäre Datenquelle
-            temp_layer = temp_ds.CreateLayer("temp_layer", layer.GetSpatialRef(), geom_type=ogr.wkbPolygon)
+        driver = gdal.GetDriverByName("Memory")
+        for feature in features:
+            temp_file = driver.CreateDataSource('')
+            temp_layer = temp_file.CreateLayer('temp_layer', srs=srs, geom_type=ogr.wkbPolygon)
+            temp_layer.CreateFeature(feature)
 
-            # Feature kopieren um ein einzelnes feature in raster zu brennen
-            new_feature = feature.Clone()
-            temp_layer.CreateFeature(new_feature)
-
-            # Geometrie ins Raster brennen mit FID als Wert
             gdal.RasterizeLayer(mask_raster, [1], temp_layer, burn_values=[feature.GetFID()])
 
-        mask_raster.FlushCache()  # Daten in die Datei schreiben
+        mask_raster.FlushCache()
         mask_raster = None
 
-        geojason_file = None
-        src_file = None
-
-    # (Grenzhöhe treeline abfangen)
-    # 01 Lawinengefahr: [Gefahrenstufe, Ober-/Unterhalb, Grenzhöhe], ..
-    # 02 Lawinenproblem: [Problemtyp, Ober-/Unterhalb, Grenzhöhe, Expositionen], ..
-    # 03 Gefahrenmuster: [Mustertyp], ..
-    # 04 Regionen
-
-    def create_standardized_avalanche_report_CAAMLV6(self, src_file, dst_file, micro_region_file): # TODO patterns aufnehmen
+    def create_standardized_avalanche_report_CAAMLV6(self): # TODO patterns aufnehmen, Cleanup 
         tag_prefix = '{http://caaml.org/Schemas/V6.0/Profiles/BulletinEAWS}'
-        tree = ET.parse(src_file)
+        tree = ET.parse(self.raw_avalanche_report_path)
         root = tree.getroot()
 
         features = []
@@ -439,14 +367,9 @@ class Map():
             
             # Convert region_ids to polygones
             microregion_data = None
-            file = open(micro_region_file, "r", encoding="utf-8")
+            file = open(self.microregions_path, "r", encoding="utf-8")
             microregion_data = json.load(file)
             file.close()
-
-            # self.layer_data_directory = 'layer_data'
-            # self.working_region_directory = None
-            
-            
 
             polygones = []
             mr = microregion_data['features']
@@ -467,7 +390,7 @@ class Map():
                                          'coordinates' : polygones}}
             features.append(feature)
         
-        file = open(micro_region_file, "r", encoding="utf-8")
+        file = open(self.microregions_path, "r", encoding="utf-8")
         microregion_data = json.load(file)
         file.close()
         crs = microregion_data['crs']['properties']['name']
@@ -477,16 +400,16 @@ class Map():
                                               "crs": { "type": "name", "properties": { "name": crs } },
                                               "features": features}
     
-        with open(dst_file, 'w') as f:
+        with open(self.standardized_avalanche_report_path, 'w') as f:
             json.dump(standardized_avalanche_report_dict, f, indent= 4)
 
-    def create_standardized_avalanche_report_switzerland(self, src_path, dst_path):
+    def create_standardized_avalanche_report_switzerland(self): # TODO : Cleanup
         
         driver = ogr.GetDriverByName('GeoJSON')
-        src_file = driver.Open(src_path, 0)  # 0 bedeutet nur Lesen
+        src_file = driver.Open(self.raw_avalanche_report_path, 0)  # 0 bedeutet nur Lesen
         src_layer = src_file.GetLayer()
 
-        dst_file = driver.CreateDataSource(dst_path)
+        dst_file = driver.CreateDataSource(self.standardized_avalanche_report_path)
         dst_srs = osr.SpatialReference()
         dst_srs.ImportFromEPSG(4326)
         dst_layer = dst_file.CreateLayer('standardized_avalanche_report', srs=dst_srs)
@@ -556,14 +479,12 @@ class Map():
         src_file = None
         dst_file = None
 
-    def create_danger_layer(self, region_layer_path, avalanche_report_path):
-        driver = ogr.GetDriverByName('GeoJSON')
-        avalanche_report = driver.Open(avalanche_report_path, 0)
-        avalanche_report_layers = avalanche_report.GetLayer()
+    def create_danger_layer(self): # TODO Nochmal verbessern welche Gefahrenstufe exakt gewählt wird
+        features, _ = self.get_geojson_data(self.standardized_avalanche_report_path)
 
         earlier_list = []
         later_list = []
-        for feature in avalanche_report_layers:
+        for feature in features:
             danger_ratings = feature.GetField("Danger")
             danger_ratings = json.loads(danger_ratings)
             max_all_day = 0
@@ -592,21 +513,18 @@ class Map():
                 earlier_list.append(max_earlier)
                 later_list.append(max_later)
         
-        file = gdal.Open(region_layer_path)
-        region_layer = np.array(file.ReadAsArray(), dtype=np.float32)
-        region_layer.shape
+        region_layer, _, _, _ = self.get_tif_data(self.avalanche_report_region_layer_path)
         danger_layer_early = np.full(region_layer.shape, np.nan)
         danger_layer_late = np.full(region_layer.shape, np.nan)
-        feature_count = avalanche_report_layers.GetFeatureCount()
 
-        for i in range(feature_count):
+        for i in range(len(features)):
             danger_layer_early = np.where(region_layer == np.float32(i), earlier_list[i], danger_layer_early)
-        for i in range(feature_count):
+        for i in range(len(features)):
             danger_layer_late = np.where(region_layer == np.float32(i), later_list[i], danger_layer_late)
         
         self.save_layer([Layers.DANGER_EARLY, Layers.DANGER_LATE], [danger_layer_early, danger_layer_late])
 
-    def convert_mainValue(self, mainValue):
+    def convert_mainValue(self, mainValue): # DONE
         mainValueInt = 0
         if mainValue == 'low':
             mainValueInt = 1
@@ -618,7 +536,7 @@ class Map():
             mainValueInt = 4
         return mainValueInt
     
-    def convert_subValue(self, subValue):
+    def convert_subValue(self, subValue): # DONE
         mainValueInt = 0
         if subValue == 'minus':
             mainValueInt = -0.33
@@ -670,55 +588,7 @@ class Map():
 
         for i, layertype in enumerate(layertypes):
             layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{layertype.value}'
-
-            yLength, xLength = np.shape(layer_arrays[i])
-            driver = gdal.GetDriverByName('GTiff')
-            output_raster = driver.Create(layer_filepath,
-                                          int(xLength),
-                                          int(yLength),
-                                          1,
-                                          eType = gdal.GDT_Float32)
-
-            output_raster.SetProjection(self.working_projection)
-            output_raster.SetGeoTransform(self.working_geotransform)
-            band = output_raster.GetRasterBand(1)
-            band.SetNoDataValue(-9999)
-            band.WriteArray(layer_arrays[i])          
-            band.FlushCache()
-            band.ComputeStatistics(False)
-
-        #     rows, columns = np.shape(layer_array)
-        #     driver = gdal.GetDriverByName('GTiff')
-        #     output_raster = driver.Create(f'{self.map_folder}/{layertype.value}',
-        #                                         int(columns),
-        #                                         int(rows),
-        #                                         1,
-        #                                         eType = gdal.GDT_Float32)
-
-        #     output_raster.SetProjection(self.projection)
-        #     output_raster.SetGeoTransform(self.geotransform)
-        #     band = output_raster.GetRasterBand(1)
-        #     band.SetNoDataValue(-9999)
-        #     band.WriteArray(layer_array)          
-        #     band.FlushCache()
-        #     band.ComputeStatistics(False)
-        # else: # layertype == preprocessed data
-        #     for i, l1 in enumerate(layertype):
-        #         rows, columns = np.shape(layer_array[i])
-        #         driver = gdal.GetDriverByName('GTiff')
-        #         output_raster = driver.Create(f'{self.map_folder}/{l1.value}',
-        #                                         int(columns),
-        #                                         int(rows),
-        #                                         1,
-        #                                         eType = gdal.GDT_Float32)
-
-        #         output_raster.SetProjection(self.projection)
-        #         output_raster.SetGeoTransform(self.geotransform)
-        #         band = output_raster.GetRasterBand(1)
-        #         band.SetNoDataValue(-9999)
-        #         band.WriteArray(layer_array[i])          
-        #         band.FlushCache()
-        #         band.ComputeStatistics(False)
+            self.create_tif(layer_filepath, layer_arrays[i], self.working_geotransform, self.working_projection)
 
 ##### SHOW #####
 
