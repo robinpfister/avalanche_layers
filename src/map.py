@@ -10,6 +10,7 @@ from matplotlib.colors import Normalize
 import gitlab
 from enum import Enum
 import xml.etree.ElementTree as ET
+import shutil
 
 from src.layers import Layers
 
@@ -23,6 +24,8 @@ class Map():
         gdal.UseExceptions()
 
         self.layer_data_directory = 'layer_data'
+        self.input_data_directory = 'input_data'
+        self.working_region = None
         self.working_region_directory = None
 
         self.working_projection = None
@@ -37,31 +40,73 @@ class Map():
                              Region.TYROL : ['AT-07', 'IT-32-BZ', 'IT-32-TN']}
 
         self.layerCalculatorFactory = layerCalculatorFactory
+
+##### BASE FUNKTIONS #####
+
+    def register_new_data(self):
+        self.delete_layer_data()
+
+        for region in Region: # loop through all supported regions
+            self.set_working_region(region)
+            self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}')
         
+            self.preprocess_dgm()
 
-##### PULL DGM #####
+            self.set_working_region(region)
 
-    def register_new(self):
-        for region in Region:
-            region_directory = region.value
+            self.preprocess_avalanche_report()
 
-            if os.path.isdir(f'input_data/DGM_{region_directory}'):
-                data_available = bool(os.listdir(f'input_data/DGM_{region_directory}'))
-            else:
-                continue
+    def set_working_region(self, region):
+        if isinstance(region, Region):
+            self.working_region = region
+            self.working_region_directory = region.value
 
-            if data_available:
-                os.makedirs(f'{self.layer_data_directory}/{region_directory}/preprocessed_data')
+            if os.path.exists(f'{self.layer_data_directory}/{self.working_region.value}/height.tif'):
+            # set working geotransform & projection
+                file = gdal.Open(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif')
+                self.working_geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
+                self.working_projection = str(file.GetProjection())
+                self.working_srs = file.GetSpatialRef()
+
+                file = None
+
+##### DIRECTORY MANAGEMENT #####
+
+    def delete_layer_data(self):
+        if os.path.exists(self.layer_data_directory) and os.path.isdir(self.layer_data_directory):
+                shutil.rmtree(self.layer_data_directory)
+
+    def create_directory(self, path): # ?
+        os.makedirs(path)
+
+    def input_data_available(self):
+        input_data_path = f'{self.input_data_directory}/{self.working_region_directory}'
+        return os.path.isdir(input_data_path) and len(os.listdir(input_data_path)) > 0
         
-                self.merge_tif_files(f'input_data/DGM_{region_directory}', f'{self.layer_data_directory}/{region_directory}/height.tif')
+##### DGM PREPROCESS STUFF #####
 
-                if region == Region.TYROL:
-                    self.cut_1_edge(f'{self.layer_data_directory}/{region_directory}/height.tif')
+    def preprocess_dgm(self):
+        if self.input_data_available():
+            self.create_height_layer()
+            self.standardize_height_layer()
+    
+    def create_height_layer(self):
+        height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layers.HEIGHT.value}'
 
-                if region == Region.TYROL or region == Region.SWITZERLAND:
-                    self.downscale_tif_file(f'{self.layer_data_directory}/{region_directory}/height.tif', 2)
+        tif_files = glob.glob(f'{self.input_data_directory}/{self.working_region_directory}/*.tif') # get list of all hight_layers in input_data/region folder
+        gdal.Warp(height_layer_path, tif_files, format="GTiff", srcNodata=-9999, dstNodata=-9999) # join all hight_layers to one big height_layer
 
-    def cut_1_edge(self, path): # CHECK
+    def standardize_height_layer(self):
+        height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layers.HEIGHT.value}'
+
+        # extra editing for uniform height_layer
+        if self.working_region == Region.TYROL:
+            self.cut_edge_layer(height_layer_path) # cut edge row/column
+            self.downscale_layer(height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
+        elif self.working_region == Region.SWITZERLAND:
+            self.downscale_layer(height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
+
+    def cut_edge_layer(self, path): # CHECK
         
         file = gdal.Open(path)
         layer_array = file.ReadAsArray()
@@ -90,7 +135,7 @@ class Map():
         band.FlushCache()
         band.ComputeStatistics(False)
 
-    def downscale_tif_file(self, path, scale_factor): # CHECK
+    def downscale_layer(self, path, scale_factor): # CHECK
         file = gdal.Open(path)
         array = np.array(file.ReadAsArray(), dtype=np.float32)
         projektion = file.GetProjection()
@@ -132,60 +177,47 @@ class Map():
         band.FlushCache()
         band.ComputeStatistics(False)
 
-    def merge_tif_files(self, folder, output_file): # CHECK
+##### AVALANCHE REPORT PREPROCESS STUFF #####
 
-        tif_files = glob.glob(f'{folder}/*.tif') 
+    def preprocess_avalanche_report(self):
+        self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/report_data')
 
-        gdal.Warp(output_file, tif_files, format="GTiff", srcNodata=-9999, dstNodata=-9999)   
+        self.create_microregion_definition()
 
-    def set_working_region(self, region):
-        if isinstance(region, Region):
-            self.working_region_directory = region.value
+        self.pull_avalanche_report()
+        self.standardize_avalanche_report()
 
-            # set working geotransform & projection
-            file = gdal.Open(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif')
-            self.working_geotransform = tuple(file.GetGeoTransform()) #tuple(), str() nicht zwangsläufig nötig
-            self.working_projection = str(file.GetProjection())
-            self.working_srs = file.GetSpatialRef()
+        avalanche_report_base_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/avalanche_report_region_layer.tif'
+        standardized_avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report.json'
+        self.burn_geometries_in_raster(f'{self.layer_data_directory}/{self.working_region_directory}/height.tif', avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
+        self.create_danger_layer(avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
 
-            file = None
+    def create_microregion_definition(self):
+        if self.working_region in [Region.BAVARIA, Region.TYROL]:
+            microregions_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions.json'
+            self.pull_microregions(microregions_filepath, self.avalanche_report_microregions[self.working_region])
+            microregions_converted_espg_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions_converted_espg.json'
+            self.convert_coordinate_reference(microregions_filepath, microregions_converted_espg_filepath)
 
-##### PULL AVALANCHE REPORT #####
+    def pull_avalanche_report(self):
+        avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/raw_avalanche_report'
+        if self.working_region == Region.BAVARIA or self.working_region == Region.TYROL:
+            self.download_avalanche_report_xml(f'{avalanche_report_filepath}.xml', self.avalanche_report_url[self.working_region])
+        elif self.working_region == Region.SWITZERLAND:
+            self.download_avalanche_report_json(f'{avalanche_report_filepath}.json', self.avalanche_report_url[self.working_region])
 
-    def pull_new(self): # in einzelne funktionen für jede region umwandeln und in register_new() aufrufen TODO
-        for region in Region:
-            if region in [Region.BAVARIA, Region.TYROL]:
-                self.set_working_region(region)
-            region_directory = region.value
+    def standardize_avalanche_report(self):
+        avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/raw_avalanche_report'
+        standardized_avalanche_report_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report.json'
+        microregions_converted_espg_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions_converted_espg.json'
+        if self.working_region == Region.BAVARIA or self.working_region == Region.TYROL:
+            self.create_standardized_avalanche_report_CAAMLV6(f'{avalanche_report_filepath}.xml', standardized_avalanche_report_filepath, microregions_converted_espg_filepath)
+        elif self.working_region == Region.SWITZERLAND:
+            standardized_avalanche_report_wrong_epsg_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/standardized_avalanche_report_wrong_epsg.json'
+            self.create_standardized_avalanche_report_switzerland(f'{avalanche_report_filepath}.json', standardized_avalanche_report_wrong_epsg_filepath)
+                
+            self.convert_coordinate_reference(standardized_avalanche_report_wrong_epsg_filepath, standardized_avalanche_report_filepath)
 
-            #os.makedirs(f'{self.layer_data_directory}/{region_directory}/micro_regions')
-            #os.makedirs(f'{self.layer_data_directory}/{region_directory}/avalanche_problem')
-            os.makedirs(f'{self.layer_data_directory}/{region_directory}/report_data')
-
-            # Pull Microregions
-            if region in [Region.BAVARIA, Region.TYROL]:
-                microregions_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions.json'
-                self.pull_microregions(microregions_filepath, self.avalanche_report_microregions[region])
-                microregions_converted_espg_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/microregions_converted_espg.json'
-                self.convert_coordinate_reference(microregions_filepath, microregions_converted_espg_filepath)
-
-            # Pull Avalanche Report
-            avalanche_report_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/raw_avalanche_report'
-            standardized_avalanche_report_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/standardized_avalanche_report.json'
-            if region == Region.BAVARIA or region == Region.TYROL:
-                self.download_avalanche_report_xml(f'{avalanche_report_filepath}.xml', self.avalanche_report_url[region])
-                self.create_standardized_avalanche_report_CAAMLV6(f'{avalanche_report_filepath}.xml', standardized_avalanche_report_filepath, microregions_converted_espg_filepath)
-            else:
-                self.download_avalanche_report_json(f'{avalanche_report_filepath}.json', self.avalanche_report_url[region])
-                #if region == Region.TYROL:
-                    #self.create_standardized_avalanche_report_tyrol(f'{avalanche_report_filepath}.json', standardized_avalanche_report_filepath)
-                #elif region == Region.SWITZERLAND:
-                    #self.create_standardized_avalanche_report_switzerland(f'{avalanche_report_filepath}.json', standardized_avalanche_report_filepath)
-            
-            if region == Region.BAVARIA or region == Region.TYROL:
-                avalanche_report_base_layer_filepath = f'{self.layer_data_directory}/{region_directory}/report_data/avalanche_report_region_layer.tif'
-                self.burn_geometries_in_raster(f'{self.layer_data_directory}/{region_directory}/height.tif', avalanche_report_base_layer_filepath, standardized_avalanche_report_filepath)
-    
     def download_avalanche_report_xml(self, file, url): # CHECK
         response = requests.get(url)
         if response.status_code == 200:
@@ -335,7 +367,7 @@ class Map():
     # 03 Gefahrenmuster: [Mustertyp], ..
     # 04 Regionen
 
-    def create_standardized_avalanche_report_CAAMLV6(self, src_file, dst_file, micro_region_file): # TODO
+    def create_standardized_avalanche_report_CAAMLV6(self, src_file, dst_file, micro_region_file): # TODO patterns aufnehmen
         tag_prefix = '{http://caaml.org/Schemas/V6.0/Profiles/BulletinEAWS}'
         tree = ET.parse(src_file)
         root = tree.getroot()
@@ -365,6 +397,7 @@ class Map():
                 time_slot = danger_rating.find(f'{tag_prefix}validTimePeriod')
                 time_slot = time_slot.text
                 danger = {'main_value' : main_value,
+                          'sub_value' : None,
                           'lower_bound' : lower_bound,
                           'upper_bound' : upper_bound,
                           'time_slot' : time_slot}
@@ -410,8 +443,8 @@ class Map():
             microregion_data = json.load(file)
             file.close()
 
-            self.layer_data_directory = 'layer_data'
-            self.working_region_directory = None
+            # self.layer_data_directory = 'layer_data'
+            # self.working_region_directory = None
             
             
 
@@ -440,316 +473,160 @@ class Map():
         crs = microregion_data['crs']['properties']['name']
         # Create GeoJSON structure
         standardized_avalanche_report_dict = {"type": "FeatureCollection",
-                                              "name": "IT-32-TN_micro-regions",
+                                              "name": "standardized_avalanche_report",
                                               "crs": { "type": "name", "properties": { "name": crs } },
                                               "features": features}
     
         with open(dst_file, 'w') as f:
             json.dump(standardized_avalanche_report_dict, f, indent= 4)
 
-
-        return standardized_avalanche_report_dict
-
-    def create_standardized_avalanche_report_tyrol(self, src_file, dst_file): # TODO
-        pass
-
-    def create_standardized_avalanche_report_switzerland(self, src_file, dst_file): # TODO
-        pass
-
-##### LEGACY #####
-
-    def createAvalancheReportLayersTYRL(self):
-
-        regions = ["AT-07", 'IT-32-BZ', 'IT-32-TN']
-        self.pull_avalanche_report(f'{self.map_folder}/avalanche_report/report.json', "https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.json")
-        self.pull_microregions(regions)
-        for region in regions:
-            self.convert_json_coordinate_reference(f'{self.map_folder}/micro_regions/{region}.json', f'{self.map_folder}/micro_regions/{region}_espg2056.json', 2056)
-        self.create_avalanche_report_summary2(f'{self.map_folder}/avalanche_report/report.json', f'{self.map_folder}/avalanche_report/report_summary.json')
-        self.create_geotif_report_features(regions, f'{self.map_folder}/avalanche_report/report_geometry.json')
-        self.burn_geometries_in_raster(f'{self.map_folder}/{Layers.HEIGHT.value}', f'{self.map_folder}/{Layers.AVALANCHE_REPORT_MASK.value}', f'{self.map_folder}/avalanche_report/report_geometry.json')
-        file = gdal.Open(f'{self.map_folder}/avalanche_report/avalanche_report_mask.tif')
-        array = file.ReadAsArray()
-        pyplot.imshow(array)
-        pyplot.show()
-
-    def create_avalanche_report_summary2(self, src_path, dst_path):
-
-        file = open(src_path, "r", encoding="utf-8")
-        data = json.load(file)
-        file.close()
-
-        avalanche_properties = []
-
-        for feature in data['bulletins']:
-
-            Risks = []
-
-            for rrisk in feature['dangerRatings']:
-                Risk = {'mainValue' : rrisk['mainValue'],
-                        'upperBound' : rrisk['elevation']['upperBound'] if 'elevation' in rrisk and 'upperBound' in rrisk['elevation'] else None,
-                        'lowerBound' : rrisk['elevation']['lowerBound'] if 'elevation' in rrisk and 'lowerBound' in rrisk['elevation'] else None}
-                Risks.append(Risk)
-
-            tendency = feature['tendency'][0]['tendencyType']
-                
-            Danger_Patterns = feature['customData']['LWD_Tyrol']['dangerPatterns']
-
-            Avalanche_Problems = []
-
-            for avalanche_problem in feature['avalancheProblems']:
-                Avalanche_Problem = {'type' : avalanche_problem['problemType'],
-                                     'upperBound' : avalanche_problem['elevation']['upperBound'] if 'upperBound' in avalanche_problem['elevation'] else None,
-                                     'lowerBound' : avalanche_problem['elevation']['lowerBound'] if 'lowerBound' in avalanche_problem['elevation'] else None,
-                                     'aspects' : avalanche_problem['aspects'],
-                                     'snowpackStability' : avalanche_problem['snowpackStability'],
-                                     'frequency' : avalanche_problem['frequency'],
-                                     'avalancheSize' : avalanche_problem['avalancheSize']}
-                Avalanche_Problems.append(Avalanche_Problem)
-            
-            Regions = []
-
-            for rregion in feature['regions']:
-                Regions.append(rregion['regionID'])
-
-            avalanche_property = {'Risks' : Risks,
-                                  'tendency' : tendency,
-                                  'Danger_Patterns' : Danger_Patterns,
-                                  'Avalanche_Problems' : Avalanche_Problems,
-                                  'Regions' : Regions}
-            
-            avalanche_properties.append(avalanche_property)
-
-        data = {'data' : avalanche_properties}     
-
-        writeFile =open(dst_path, 'w', encoding='utf-8')
-        json.dump(data, writeFile, ensure_ascii=False, indent=4)
-        writeFile.close()
-
-    def create_geotif_report_features(self, regions, dst_path):
-
-# Die id's für 
-
-            file = open(f'{self.map_folder}/avalanche_report/report_summary.json', "r", encoding="utf-8")
-            summary_data = json.load(file)
-            file.close()
-
-            features = []
-
-            for i, report in enumerate(summary_data['data']):
-
-                polygones = []
-
-                for region in regions:
-
-                    file = open(f'{self.map_folder}/micro_regions/{region}_espg2056.json', "r", encoding="utf-8")
-                    data = json.load(file)
-                    file.close()
-
-                    report_regions = report['Regions']
-                    for report_region in report_regions:
-                        if region in report_region:
-
-                            for micro_region in data['features']:
-                                if micro_region['properties']['id'] == report_region:
-                                    for polygon in micro_region['geometry']['coordinates']:
-                                        polygones.append(polygon)
-                    
-                feature = {'type' : 'Feature',
-                           'properties' : {'id' : i},
-                           'geometry' : {'type' : 'MultiPolygon',
-                                         'coordinates' : polygones}}
-                features.append(feature)
-            
-            data = {"type": "FeatureCollection",
-                    "name": "IT-32-TN_micro-regions",
-                    "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
-                    "features": features}
-            
-            writeFile =open(dst_path, 'w', encoding='utf-8')
-            json.dump(data, writeFile, ensure_ascii=False, indent=4)
-            writeFile.close()
-            
-    def createAvalancheReportLayersCH(self):
-
-        self.pull_avalanche_report(f'{self.map_folder}/avalanche_report/report.json', "https://aws.slf.ch/api/bulletin/caaml/v4/de/geojson")
-        self.convert_json_coordinate_reference(f'{self.map_folder}/avalanche_report/report.json', f'{self.map_folder}/avalanche_report/report_espg2056.json', 2056)
-        self.create_avalanche_report_summary(f'{self.map_folder}/avalanche_report/report_espg2056.json', f'{self.map_folder}/avalanche_report/report_summary.json')
-        self.burn_geometries_in_raster(f'{self.map_folder}/{Layers.HEIGHT.value}', f'{self.map_folder}/{Layers.AVALANCHE_REPORT_MASK.value}', f'{self.map_folder}/avalanche_report/report_espg2056.json')
-        self.create_avalanche_report_layers()
-
-    def create_avalanche_report_summary(self, src_path, dst_path):
-
+    def create_standardized_avalanche_report_switzerland(self, src_path, dst_path):
+        
         driver = ogr.GetDriverByName('GeoJSON')
         src_file = driver.Open(src_path, 0)  # 0 bedeutet nur Lesen
         src_layer = src_file.GetLayer()
 
-        avalanche_properties = []
-
-        for feature in src_layer:
-
-            Problems = []
-            avalancheProblems = feature.GetField("avalancheProblems")
-            avalancheProblems = json.loads(avalancheProblems)
-
-            c_d = feature.GetField("customData")
-            c_d = json.loads(c_d)
-            agg = c_d['CH']['aggregation']
-
-            for t in agg:
-                if t['category'] == 'dry':
-                    typ = t['problemTypes']
+        dst_file = driver.CreateDataSource(dst_path)
+        dst_srs = osr.SpatialReference()
+        dst_srs.ImportFromEPSG(4326)
+        dst_layer = dst_file.CreateLayer('standardized_avalanche_report', srs=dst_srs)
+        dst_layer.CreateField(ogr.FieldDefn("id", ogr.OFTInteger))
+        dst_layer.CreateField(ogr.FieldDefn("Danger", ogr.OFTString))
+        dst_layer.CreateField(ogr.FieldDefn("Problems", ogr.OFTString))
+        dst_layer.CreateField(ogr.FieldDefn("Patterns", ogr.OFTString))
 
 
-            for avalancheProblem in avalancheProblems:
-                Problem = {}
-                problemType = avalancheProblem["problemType"]
-                if problemType not in typ:
-                    continue
-                dangerRatingValue = avalancheProblem["dangerRatingValue"]
-                Problem['type'] = problemType
-                Problem['mainLevel'] = dangerRatingValue
-                Problem['subLevel'] = None
-                Problem['elevationLowerBound'] = None
-                Problem['elevationUpperBound'] = None
-                Problem['aspects'] = None
-                if "customData" in avalancheProblem:
-                    customData = avalancheProblem["customData"]
-                    if "CH" in customData:
-                        ch = customData["CH"]
-                        if "subdivision" in ch:
-                            subLevel = ch["subdivision"]
-                            Problem['subLevel'] = subLevel
-                if "elevation" in avalancheProblem:
-                    elevation = avalancheProblem["elevation"]
-                    if "lowerBound" in elevation:
-                        lowerBound = elevation["lowerBound"]
-                        Problem['elevationLowerBound'] = lowerBound
-                    if "upperBound" in elevation:
-                        upperBound = elevation["upperBound"]
-                        Problem['elevationUpperBound'] = upperBound
-                if "aspects" in avalancheProblem:
-                    aspects = avalancheProblem["aspects"]
-                    Problem['aspects'] = aspects
-                Problems.append(Problem)
-            avalanche_properties.append(Problems)
-            data = {'data' : avalanche_properties}
+        for i, bulletin in enumerate(src_layer):
+            dangers = []
+            danger_ratings = bulletin.GetField("dangerRatings")
+            danger_ratings = json.loads(danger_ratings)
+            for danger_rating in danger_ratings: # elevation?
+                main_value = danger_rating['mainValue']
+                if 'customData' in danger_rating and 'CH' in danger_rating['customData'] and 'subdivision' in danger_rating['customData']['CH']:
+                    sub_value = danger_rating['customData']['CH']['subdivision']
+                time_slot = danger_rating['validTimePeriod']
+                danger = {'main_value' : main_value,
+                          'sub_value' : sub_value,
+                          'lower_bound' : None,
+                          'upper_bound' : None,
+                          'time_slot' : time_slot}
+                dangers.append(danger)
+            
+            problems = []
+            avalanche_problems = bulletin.GetField("avalancheProblems")
+            avalanche_problems = json.loads(avalanche_problems)
+            for avalanche_problem in avalanche_problems:
+                problem_type = avalanche_problem['problemType']
+                if 'elevation' in avalanche_problem:
+                    if 'lower_bound' in avalanche_problem['elevation']:
+                        lower_bound = avalanche_problem['elevation']['lower_bound']
+                    else:
+                        lower_bound = None
+                    if 'upper_bound' in avalanche_problem['elevation']:
+                        upper_bound = avalanche_problem['elevation']['lower_bound']
+                    else:
+                        upper_bound = None
+                else:
+                    lower_bound = None
+                    upper_bound = None
 
-            writeFile =open(dst_path, 'w', encoding='utf-8')
-            json.dump(data, writeFile, ensure_ascii=False, indent=4)
-            writeFile.close()
-
-    def create_avalanche_report_layers(self):
-
-        file = open(f'{self.map_folder}/avalanche_report/report_summary.json', 'r')
-        data = json.load(file)['data']
-        file = None
-
-        file_height = gdal.Open(f'{self.map_folder}/{Layers.HEIGHT.value}')
-        height = np.array(file_height.ReadAsArray(), dtype=np.float32)
-        file_height = None
-
-        file_dirlvl = gdal.Open(f'{self.map_folder}/{Layers.DIRECTION_LEVEL.value}')
-        dirlvl = np.array(file_dirlvl.ReadAsArray(), dtype=np.float32)
-        file_dirlvl = None
-
-        file = gdal.Open(f'{self.map_folder}/{Layers.AVALANCHE_REPORT_MASK.value}')
-        mask_array = np.array(file.ReadAsArray(), dtype=np.int8)
-        rows, columns = np.shape(mask_array)
-
-        wind_slab = np.zeros((rows, columns), dtype=np.float32)
-        new_snow = np.zeros((rows, columns), dtype=np.float32)
-        persistent_weak_layer = np.zeros((rows, columns), dtype=np.float32)
-        no_distinct_problem = np.zeros((rows, columns), dtype=np.float32)
-
-        for i, problems in enumerate(data):
-            for problem in problems:
-
-                if problem['mainLevel'] == 'low':
-                    level = 1
-                elif problem['mainLevel'] == 'moderate':
-                    level = 3
-                elif problem['mainLevel'] == 'erheblich':
-                    level = 6
-                elif problem['mainLevel'] == 'groß':
-                    level = 9
-                elif problem['mainLevel'] == 'sehr_groß':
-                    level = 12
-
-                if problem['subLevel'] == 'plus':
-                    level = level + 1
-                elif problem['subLevel'] == 'minus':
-                    level = level - 1
-
-                dir_array = np.zeros((np.shape(new_snow)), dtype=np.float32)
+                if 'aspects' in avalanche_problem:
+                    aspects = avalanche_problem['aspects']
                 
-                directions = problem['aspects']
-                if directions != None:
-                    for direction in directions:
-                        if direction == 'N':
-                            direction = 3
-                        elif direction == 'NE':
-                            direction = 4
-                        elif direction == 'E':
-                            direction = 5
-                        elif direction == 'SE':
-                            direction = 6
-                        elif direction == 'S':
-                            direction = 7
-                        elif direction == 'SW':
-                            direction = 8
-                        elif direction == 'W':
-                            direction = 1
-                        elif direction == 'NW':
-                            direction = 2
-                        if direction == 0:
-                            print('Fehler')
-                        dir_array = np.where(dirlvl == direction, 1, dir_array)
-                
-                test = np.zeros((np.shape(new_snow)), dtype=np.float32)
+                time_slot = avalanche_problem['validTimePeriod']
 
-                lowerBound = problem['elevationLowerBound']
-                if lowerBound != None:
-                    lowerBound = np.float32(lowerBound)
-                    test = np.where(height > lowerBound, 1, 0)
-                upperBound = problem['elevationUpperBound']
-                if upperBound != None:
-                    upperBound = np.float32(upperBound)
-                    test = np.where(height < upperBound, test, 0)
+                problem = {'type' : problem_type,
+                           'lower_bound' : lower_bound,
+                           'upper_bound' : upper_bound,
+                           'aspects' : aspects,
+                           'time_slot' : time_slot}
+                problems.append(problem)
+            
+            geom = bulletin.GetGeometryRef().Clone()
 
-                test = np.where(dir_array == 1, test, 0)
-                test = np.where(test == 1, np.float32(level), 0)
+            out_feature = ogr.Feature(dst_layer.GetLayerDefn())
+            out_feature.SetGeometry(geom)
+            out_feature.SetField("id", i)
+            out_feature.SetField("Danger", json.dumps(dangers))
+            out_feature.SetField("Problems", json.dumps(problems))
+            out_feature.SetField("Patterns", json.dumps(None))
 
-                if problem['type'] == 'wind_slab':
-                    wind_slab = np.where(mask_array == i, test, wind_slab)
+            dst_layer.CreateFeature(out_feature)
+            
+        src_file = None
+        dst_file = None
 
-                elif problem['type'] == 'new_snow':
-                    new_snow = np.where(mask_array == i, test, wind_slab)
+    def create_danger_layer(self, region_layer_path, avalanche_report_path):
+        driver = ogr.GetDriverByName('GeoJSON')
+        avalanche_report = driver.Open(avalanche_report_path, 0)
+        avalanche_report_layers = avalanche_report.GetLayer()
 
-                elif problem['type'] == 'persistent_weak_layer':
-                    persistent_weak_layer = np.where(mask_array == i, test, wind_slab)
+        earlier_list = []
+        later_list = []
+        for feature in avalanche_report_layers:
+            danger_ratings = feature.GetField("Danger")
+            danger_ratings = json.loads(danger_ratings)
+            max_all_day = 0
+            max_earlier = 0
+            max_later = 0
+            for danger_rating in danger_ratings:
+                if danger_rating['time_slot'] == 'all_day':
+                    all_day = self.convert_mainValue(danger_rating['main_value'])
+                    all_day = all_day + self.convert_subValue(danger_rating['sub_value'])
+                    if all_day > max_all_day:
+                        max_all_day = all_day
+                if danger_rating['time_slot'] == 'earlier':
+                    earlier = self.convert_mainValue(danger_rating['main_value'])
+                    earlier = earlier + self.convert_subValue(danger_rating['sub_value'])
+                    if earlier > max_earlier:
+                        max_earlier = earlier
+                elif danger_rating['time_slot'] == 'later':
+                    later = self.convert_mainValue(danger_rating['main_value'])
+                    later = later + self.convert_subValue(danger_rating['sub_value'])
+                    if later > max_later:
+                        max_later = later
+            if max_all_day != 0:
+                earlier_list.append(max_all_day)
+                later_list.append(max_all_day)
+            else:
+                earlier_list.append(max_earlier)
+                later_list.append(max_later)
+        
+        file = gdal.Open(region_layer_path)
+        region_layer = np.array(file.ReadAsArray(), dtype=np.float32)
+        region_layer.shape
+        danger_layer_early = np.full(region_layer.shape, np.nan)
+        danger_layer_late = np.full(region_layer.shape, np.nan)
+        feature_count = avalanche_report_layers.GetFeatureCount()
 
-                elif problem['type'] == 'no_distinct_problem':
-                    no_distinct_problem = np.where(mask_array == i, test, wind_slab)
+        for i in range(feature_count):
+            danger_layer_early = np.where(region_layer == np.float32(i), earlier_list[i], danger_layer_early)
+        for i in range(feature_count):
+            danger_layer_late = np.where(region_layer == np.float32(i), later_list[i], danger_layer_late)
+        
+        self.save_layer([Layers.DANGER_EARLY, Layers.DANGER_LATE], [danger_layer_early, danger_layer_late])
 
-        lt = [Layers.AVALANCHE_PROBLEM.WIND_SLAB, Layers.AVALANCHE_PROBLEM.NEW_SNOW, Layers.AVALANCHE_PROBLEM.PERSISTENT_WEAK_LAYER, Layers.AVALANCHE_PROBLEM.NO_DISTINCT_PROBLEM]
-        l = [wind_slab, new_snow, persistent_weak_layer, no_distinct_problem]
-
-        for lt1, l1 in zip(lt, l):
-            driver = gdal.GetDriverByName('GTiff')
-            output_raster = driver.Create(f'{self.map_folder}/{lt1.value}',
-                                            int(columns),
-                                            int(rows),
-                                            1,
-                                            eType = gdal.GDT_Float32)
-
-            output_raster.SetProjection(self.projection)
-            output_raster.SetGeoTransform(self.geotransform)
-            band = output_raster.GetRasterBand(1)
-            band.SetNoDataValue(-9999)
-            band.WriteArray(l1)          
-            band.FlushCache()
-            band.ComputeStatistics(False)
+    def convert_mainValue(self, mainValue):
+        mainValueInt = 0
+        if mainValue == 'low':
+            mainValueInt = 1
+        elif mainValue == 'moderate':
+            mainValueInt = 2
+        elif mainValue == 'considerable':
+            mainValueInt = 3
+        elif mainValue == 'high':
+            mainValueInt = 4
+        return mainValueInt
+    
+    def convert_subValue(self, subValue):
+        mainValueInt = 0
+        if subValue == 'minus':
+            mainValueInt = -0.33
+        elif subValue == 'neutral':
+            mainValueInt = 0
+        elif subValue == 'plus':
+            mainValueInt = 0.33
+        return mainValueInt
 
 ##### CALCULATE #####
 
