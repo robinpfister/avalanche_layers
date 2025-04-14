@@ -6,13 +6,16 @@ from osgeo import gdal, ogr, osr
 import numpy as np
 import time
 from matplotlib import pyplot
+import matplotlib
 from matplotlib.colors import Normalize
 import gitlab
 from enum import Enum
 import xml.etree.ElementTree as ET
 import shutil
 
-from src.layers import Layers
+from layer import Layer
+
+matplotlib.use('tkagg')
 
 class Region(Enum):
     BAVARIA = 'bavaria'
@@ -59,16 +62,20 @@ class Map():
         self.delete_layer_data()
         for region in Region: # loop through all supported regions
             self.set_working_region(region)
-            self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}')
-            self.preprocess_dgm()
-            self.set_tif_properties()
-            self.preprocess_avalanche_report()
+            if self.input_data_available():
+                self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}')
+                self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/report_data')
+                self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/preprocess_layer/coefficients')
+                self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/preprocess_layer/rsa')
+                self.preprocess_dgm()
+                self.set_tif_properties()
+                #self.preprocess_avalanche_report()
 
     def set_working_region(self, region):
         self.working_region = region
         self.working_region_directory = region.value
         
-        self.height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layers.HEIGHT.value}'
+        self.height_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/{Layer.HEIGHT.value}'
         self.avalanche_report_region_layer_path = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/avalanche_report_region.tif'
         
         self.microregions_path = f'{self.layer_data_directory}/{self.working_region_directory}/report_data/microregions.geojson'
@@ -90,6 +97,13 @@ class Map():
         self.working_geotransform = geotransform
         self.working_projection = projection
         self.working_srs = srs
+
+    def delete_layer(self, layertype):
+        if type(layertype) == Layer:
+            self.delete_file(f'{self.layer_data_directory}/{self.working_region_directory}/{layertype.value}')
+        else:
+            for inside_layertype in layertype:
+                self.delete_file(f'{self.layer_data_directory}/{self.working_region_directory}/{inside_layertype.value}')
 
 ##### DIRECTORY MANAGEMENT #####
 
@@ -162,9 +176,8 @@ class Map():
 ##### DGM PREPROCESS STUFF #####
 
     def preprocess_dgm(self): # DONE
-        if self.input_data_available():
-            self.create_height_layer()
-            self.standardize_height_layer()
+        self.create_height_layer()
+        self.standardize_height_layer()
     
     def create_height_layer(self): # DONE
         tif_files = glob.glob(f'{self.input_data_directory}/{self.working_region_directory}/*.tif') # get list of all hight_layers in input_data/region folder
@@ -199,9 +212,8 @@ class Map():
 ##### AVALANCHE REPORT PREPROCESS STUFF #####
 
     def preprocess_avalanche_report(self): # DONE
-        self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/report_data')
-
-        self.create_microregion_definition()
+        if self.working_region in [Region.BAVARIA, Region.TYROL]:
+            self.create_microregion_definition()
 
         self.pull_avalanche_report()
         self.standardize_avalanche_report()
@@ -210,7 +222,6 @@ class Map():
         self.create_danger_layer()
 
     def create_microregion_definition(self): # DONE
-        if self.working_region in [Region.BAVARIA, Region.TYROL]:
             self.pull_microregions()
             self.convert_geojson_srs(self.microregions_path)
 
@@ -522,7 +533,7 @@ class Map():
         for i in range(len(features)):
             danger_layer_late = np.where(region_layer == np.float32(i), later_list[i], danger_layer_late)
         
-        self.save_layer([Layers.DANGER_EARLY, Layers.DANGER_LATE], [danger_layer_early, danger_layer_late])
+        self.save_layer([Layer.DANGER_EARLY, Layer.DANGER_LATE], [danger_layer_early, danger_layer_late])
 
     def convert_mainValue(self, mainValue): # DONE
         mainValueInt = 0
@@ -548,9 +559,8 @@ class Map():
 
 ##### CALCULATE #####
 
-    def calculateLayer(self, layertype):
+    def calculateLayer(self, layertype): # TODO
         layerCalculator = self.layerCalculatorFactory.get_calculator(layertype)
-        
         layers = self.get_required_layers_dict(layerCalculator.required_layers)
         
         start = time.time()
@@ -560,7 +570,7 @@ class Map():
 
         self.save_layer(layertype, layer_arrays)
 
-    def get_required_layers_dict(self, required_layertypes):
+    def get_required_layers_dict(self, required_layertypes): # TODO
         layers_dict = {}
         for required_layertype in required_layertypes:
             required_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{required_layertype.value}'
@@ -571,7 +581,7 @@ class Map():
                 layers_dict[required_layertype] = array
                 file = None
             else: # layer is not available -> recurive execution of calculateLayer() for the neccessary layer
-                if type(required_layertype) == Layers: # layertype != preprocessed data
+                if type(required_layertype) == Layer: # layertype != preprocessed data
                     self.calculateLayer(required_layertype)
                 else: # layertype == preprocessed data
                     self.calculateLayer(type(required_layertype))
@@ -581,8 +591,8 @@ class Map():
                 file = None
         return layers_dict
 
-    def save_layer(self, layertypes, layer_arrays):
-        if type(layertypes) == Layers: # layertype != preprocessed data
+    def save_layer(self, layertypes, layer_arrays): # TODO
+        if type(layertypes) == Layer: # layertype != preprocessed data
             layertypes = [layertypes]
             layer_arrays = [layer_arrays]
 
@@ -592,8 +602,12 @@ class Map():
 
 ##### SHOW #####
 
-    def showLayer(self, layertypes):
+    def showLayer(self, layertypes): # TODO
 
+        min_max_mapping = { Layer.PROFILE_CURVATURE :   {'min' : -0.3,
+                                                         'max' : 0.3},
+                            Layer.PLAN_CURVATURE :      {'min' : -0.3,
+                                                         'max' : 0.3}}
         fig = pyplot.figure(figsize=(10, 8))
 
         for i, layertype in enumerate(layertypes):
@@ -602,19 +616,22 @@ class Map():
             ax = fig.add_subplot(1, len(layertypes), i+1)
             file = gdal.Open(layer_filepath)
             layer_array = file.ReadAsArray()
-            ax.imshow(layer_array, cmap = 'viridis', extent=[660000, 670000, 5270000, 5280000])
-            minn = layer_array.min()
-            maxx = layer_array.max()
-            norm = Normalize(minn, maxx)
+            if layertype in min_max_mapping:
+                min  = min_max_mapping[layertype]['min']
+                max  = min_max_mapping[layertype]['max']
+            else:
+                manipulated_array = np.where(np.isnan(layer_array), 0, layer_array)
+                min = manipulated_array.min()
+                max = manipulated_array.max()
+            
+            ax.imshow(layer_array, cmap = 'viridis', vmin = min, vmax = max) # extent=[660000, 670000, 5270000, 5280000]
+            norm = Normalize(min, max)
             m = pyplot.cm.ScalarMappable(norm=norm, cmap= 'viridis')
             m.set_array([])
             pyplot.colorbar(m, ax=ax, orientation="horizontal")
         pyplot.show()
 
-    def show3D(self, layertypes, cmaps, values, area):
-
-        height_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/height.tif'
-
+    def show3D(self, layertypes, cmaps, values, area): # TODO
         fig = pyplot.figure(figsize=(10, 8))
 
         x = np.linspace(0, area[3]-1, area[3])
@@ -638,7 +655,7 @@ class Map():
             fcolor = m.to_rgba(color_dimension)
                     
             ax = fig.add_subplot(1, len(layertypes), i+1, projection='3d')
-            file = gdal.Open(height_layer_filepath)
+            file = gdal.Open(self.height_layer_path)
             height_array = file.ReadAsArray()
             Z = height_array[area[0]:area[0]+area[2], area[1]:area[1]+area[3]]
             ax.plot_surface(X, Y, Z, facecolors=fcolor)
