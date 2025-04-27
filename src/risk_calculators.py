@@ -5,16 +5,9 @@ from layer_calculator_factory import LayerCalculator
 # external imports
 import numpy as np
 
-class SituationRiskCalculator(LayerCalculator): # TODO
+class TopoRiskCalculator(LayerCalculator): # Risk without RSA
     def __init__(self):
-        self.required_layers = [Layer.DANGER_EARLY, Layer.DANGER_LATE]
-    
-    def calculate(self, layers):
-        pass
-    
-class TopoRiskStandardCalculator(LayerCalculator): # DONE
-    def __init__(self):
-        self.required_layers = [Layer.SHAPE, Layer.SLOPE]
+        self.required_layers = [Layer.SLOPE, Layer.SHAPE]
     
     def calculate(self, layers):
         slope = layers.get(Layer.SLOPE)
@@ -33,46 +26,94 @@ class TopoRiskStandardCalculator(LayerCalculator): # DONE
         shape_probability = np.where(shape == 8, 32/153, shape_probability)
         shape_probability = np.where(shape == 9, 18/153, shape_probability)
 
-        risk = ((2 * slope_probability) + shape_probability) / 3
+        topo_risk = ((2 * slope_probability) + shape_probability) / 3
 
-        return risk
+        #check for nan values in input
+        topo_risk = np.where(np.isnan(shape), np.nan, topo_risk)
+
+        return topo_risk
     
-class TopoRiskAthmCalculator(LayerCalculator): # DONE
+class TopoRiskRsaCalculator(LayerCalculator):
     def __init__(self):
-        self.required_layers = [Layer.RELEVANT_SLOPE_AREA_PROPERTIES.AVERAGE_SLOPE, Layer.RELEVANT_SLOPE_AREA_PROPERTIES.SIZE]
+        self.required_layers = [Layer.RSA_MAX_SLOPE, Layer.SLOPE, Layer.SHAPE]
     
     def calculate(self, layers):
-        avg_slope = layers.get(Layer.RELEVANT_SLOPE_AREA_PROPERTIES.AVERAGE_SLOPE)
-        size = layers.get(Layer.RELEVANT_SLOPE_AREA_PROPERTIES.SIZE)
+        max_slope = layers.get(Layer.RSA_MAX_SLOPE)
+        slope = layers.get(Layer.SLOPE)
+        shape = layers.get(Layer.SHAPE)
+
+        max_slope = np.where(max_slope == 0, slope, max_slope)
         
-        slope_probability = np.where(avg_slope > 50, (55 - avg_slope) / 5, 1 / (1 + np.exp(-0.8 * (avg_slope - 34)))**(1/1.3))
-        slope_probability = np.where(avg_slope >= 55, 0, slope_probability)
+        slope_probability = np.where(max_slope > 50, (55 - max_slope) / 5, 1 / (1 + np.exp(-0.8 * (max_slope - 34)))**(1/1.3))
+        slope_probability = np.where(max_slope >= 55, 0, slope_probability)
 
-        size_probability = np.where(size >= 400, 0.2, 0)
-        size_probability = np.where(size >= 1600, 0.4, size_probability)
-        size_probability = np.where(size >= 6400, 0.6, size_probability)
-        size_probability = np.where(size >= 12800, 0.8, size_probability)
-        size_probability = np.where(size >= 25600, 1, size_probability)
+        shape_probability = np.where(shape == 1, 22/153, 0)
+        shape_probability = np.where(shape == 2, 119/153, shape_probability)
+        shape_probability = np.where(shape == 3, 135/153, shape_probability)
+        shape_probability = np.where(shape == 4, 8/153, shape_probability)
+        shape_probability = np.where(shape == 5, 153/153, shape_probability)
+        shape_probability = np.where(shape == 6, 57/153, shape_probability)
+        shape_probability = np.where(shape == 7, 23/153, shape_probability)
+        shape_probability = np.where(shape == 8, 32/153, shape_probability)
+        shape_probability = np.where(shape == 9, 18/153, shape_probability)
 
-        risk = ((2 * slope_probability) + size_probability) / 3
+        topo_risk = ((2 * slope_probability) + shape_probability) / 3
 
-        return risk
+        #check for nan values in input
+        topo_risk = np.where(np.isnan(shape), np.nan, topo_risk)
 
-class TopoRiskLevelCalculator(LayerCalculator): # DONE
+        return topo_risk
+
+class TopoRiskLevelCalculator(LayerCalculator):
     def __init__(self):
         self.required_layers = [Layer.TOPO_RISK]
     
     def calculate(self, layers):
-        risk = layers.get(Layer.TOPO_RISK)
+        topo_risk = layers.get(Layer.TOPO_RISK)
 
-        risk_level = np.where(risk > 0.5, 1, 0)
-        risk_level = np.where(risk >= 0.75, 2, risk_level)
+        topo_risk_level = np.where(topo_risk > 0.5, 1, 0)
+        topo_risk_level = np.where(topo_risk >= 0.75, 2, topo_risk_level)
 
-        return risk_level
+        #check for nan values in input
+        topo_risk_level = np.where(np.isnan(topo_risk), np.nan, topo_risk_level)
+
+        return topo_risk_level
     
-class CombinedRiskCalculator(LayerCalculator): # TODO
+class CombinedRiskCalculator(LayerCalculator):
     def __init__(self):
         self.required_layers = [Layer.TOPO_RISK, Layer.SITUATION_RISK]
     
     def calculate(self, layers):
-        pass
+        topo_risk = layers.get(Layer.TOPO_RISK)
+        situation_risk = layers.get(Layer.SITUATION_RISK)
+
+        situation_risk_factor = np.where(situation_risk > 1, 1 + (3 * (situation_risk - 1)), situation_risk)
+        situation_risk_factor = np.where(situation_risk > 2, 4 + (12 * (situation_risk - 2)), situation_risk_factor)
+        situation_risk_factor = np.where(situation_risk > 3, 16 + (48 * (situation_risk - 3)), situation_risk_factor)
+        situation_risk_factor = np.where(situation_risk > 4, 64, situation_risk_factor)
+
+        combined_risk = topo_risk * situation_risk_factor
+
+        #check for nan values in input
+        combined_risk = np.where(np.isnan(topo_risk), np.nan, combined_risk)
+
+        return combined_risk
+
+class CombinedRiskLevelCalculator(LayerCalculator):
+    def __init__(self):
+        self.required_layers = [Layer.COMBINED_RISK]
+    
+    def calculate(self, layers):
+        combined_risk = layers.get(Layer.COMBINED_RISK)
+
+        combined_risk_level = np.where(combined_risk > 0.9, 1, 0)
+        combined_risk_level = np.where(combined_risk > 3.7, 2, combined_risk_level)
+        combined_risk_level = np.where(combined_risk > 9, 3, combined_risk_level)
+        combined_risk_level = np.where(combined_risk > 32, 4, combined_risk_level)
+
+        combined_risk_level[110,110] = 4
+
+        #check for nan values in input
+        combined_risk_level = np.where(np.isnan(combined_risk), np.nan, combined_risk_level)
+
+        return combined_risk_level

@@ -6,7 +6,7 @@ from layer_calculator_factory import LayerCalculator
 import numpy as np
 import numba as nb
 
-class HeightLevelCalculator(LayerCalculator): # DONE
+class HeightLevelCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.HEIGHT]
@@ -18,7 +18,7 @@ class HeightLevelCalculator(LayerCalculator): # DONE
 
          return height_level
 
-class AspectCalculator(LayerCalculator): # DONE
+class AspectCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.COEFFICIENT.D, Layer.COEFFICIENT.E]
@@ -27,14 +27,12 @@ class AspectCalculator(LayerCalculator): # DONE
         D = layers.get(Layer.COEFFICIENT.D)
         E = layers.get(Layer.COEFFICIENT.E)
             
-        # Quelle : QUANTITATIVE ANALYSIS OF LAND SURFACE TOPOGRAPHY, Zevenbergen S. 50 Formel (15)
-        # Degree :  0-360 (0-W, 90-N, 180-E, 270-S, 360-W)
         aspect = np.arctan2(-E, -D) 
         aspect = (aspect * (180 / np.pi)) + 180
 
         return aspect
 
-class AspectLevelCalculator(LayerCalculator): # DONE
+class AspectLevelCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.ASPECT]
@@ -53,7 +51,7 @@ class AspectLevelCalculator(LayerCalculator): # DONE
         
         return aspect_level
         
-class SlopeCalculator(LayerCalculator): # DONE
+class SlopeCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.COEFFICIENT.D, Layer.COEFFICIENT.E]
@@ -62,13 +60,12 @@ class SlopeCalculator(LayerCalculator): # DONE
         D = layers.get(Layer.COEFFICIENT.D)
         E = layers.get(Layer.COEFFICIENT.E)
         
-        # Quelle : QUANTITATIVE ANALYSIS OF LAND SURFACE TOPOGRAPHY, Zevenbergen S. 50 Formel (13)
         slope_vector = ((D ** 2) + (E ** 2)) ** (1/2)
         slope_angle = np.arctan((slope_vector)) * (180 / np.pi)
         
         return slope_angle
 
-class SlopeLevelCalculator(LayerCalculator): # DONE
+class SlopeLevelCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.SLOPE]
@@ -88,7 +85,7 @@ class SlopeLevelCalculator(LayerCalculator): # DONE
 
         return slope_level
 
-class ProfileCurvatureCalculator(LayerCalculator): # DONE
+class ProfileCurvatureCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.COEFFICIENT.A, 
@@ -96,8 +93,7 @@ class ProfileCurvatureCalculator(LayerCalculator): # DONE
                                 Layer.COEFFICIENT.C, 
                                 Layer.COEFFICIENT.D, 
                                 Layer.COEFFICIENT.E]
-
-        self.z_factor = 1 # raster width
+        self.z_factor = 10
     
     def calculate(self, layers):
         A = layers.get(Layer.COEFFICIENT.A)
@@ -106,23 +102,20 @@ class ProfileCurvatureCalculator(LayerCalculator): # DONE
         D = layers.get(Layer.COEFFICIENT.D)
         E = layers.get(Layer.COEFFICIENT.E)
 
-        # Quelle :  QUANTITATIVE ANALYSIS OF LAND SURFACE TOPOGRAPHY, Zevenbergen S. 50 Formel (17) und Erklärung für Faktor 100
-        #           z_factor - Curvature (3D Analyst) ArcGIS Pro, -+ Ausrichtung aus Text ableitbar
         denominator = ((D ** 2) + (E ** 2)) * ((1 + (D ** 2) + (E ** 2)) ** (3/2))
-        # denominator = np.where(denominator == 0, np.nan, denominator)
-        profile_curvature = ((-2 * ((A * (D ** 2)) + (B * (E ** 2)) + (C * D * E))) / denominator) * (100 / (10 *self.z_factor))
+        denominator = np.where(denominator == 0, np.nan, denominator)
+        profile_curvature = ((-2 * ((A * (D ** 2)) + (B * (E ** 2)) + (C * D * E))) / denominator) * (100 / self.z_factor)
 
         return profile_curvature
 
-class PlanCurvatureCalculator(LayerCalculator): # DONE
-
+class PlanCurvatureCalculator(LayerCalculator):
     def __init__(self):
         self.required_layers = [Layer.COEFFICIENT.A, 
                                 Layer.COEFFICIENT.B, 
                                 Layer.COEFFICIENT.C, 
                                 Layer.COEFFICIENT.D, 
                                 Layer.COEFFICIENT.E]
-        self.z_factor = 1 # raster width
+        self.z_factor = 10
     
     def calculate(self, layers):
         A = layers.get(Layer.COEFFICIENT.A)
@@ -131,32 +124,33 @@ class PlanCurvatureCalculator(LayerCalculator): # DONE
         D = layers.get(Layer.COEFFICIENT.D)
         E = layers.get(Layer.COEFFICIENT.E)
 
-        # Quelle :  QUANTITATIVE ANALYSIS OF LAND SURFACE TOPOGRAPHY, Zevenbergen S. 50 Formel (18) und Erklärung für Faktor 100
-        #           z_factor - Curvature (3D Analyst) ArcGIS Pro, -+ Ausrichtung aus Text ableitbar
         denominator = (((D ** 2) + (E ** 2)) ** (3/2))
-        # denominator = np.where(denominator == 0, np.nan, denominator)
-        plan_curvature = ((-2 * ((B * (D ** 2)) + (A * (E ** 2)) - (C * D * E))) / denominator) * (100 / (10*self.z_factor))
+        denominator = np.where(denominator == 0, np.nan, denominator)
+        plan_curvature = ((-2 * ((B * (D ** 2)) + (A * (E ** 2)) - (C * D * E))) / denominator) * (100 / self.z_factor)
 
         return plan_curvature
 
-class ShapeCalculator(LayerCalculator): #DONE
+class ShapeCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.PROFILE_CURVATURE, Layer.PLAN_CURVATURE]
     
     def calculate(self, layers):
-        profile_curvature = np.copy(layers.get(Layer.PROFILE_CURVATURE))
-        plan_curvature = np.copy(layers.get(Layer.PLAN_CURVATURE))
+        profile_curvature = layers.get(Layer.PROFILE_CURVATURE)
+        plan_curvature = layers.get(Layer.PLAN_CURVATURE)
 
-        # Quelle : Terrain analysis of skier-triggered avalanche starting zones, Vontobel S.372 Threshold_Values, Classification
         shape = np.where(profile_curvature < -0.2, 1, 2)
         shape = np.where(profile_curvature > 0.2, 3, shape)
         shape = np.where(plan_curvature < -0.2, shape, shape+3)
         shape = np.where(plan_curvature > 0.2, shape+3, shape)
+        
+        #check nan-values in input data
+        shape = np.where(np.isnan(profile_curvature), np.nan, shape)
+        shape = np.where(np.isnan(plan_curvature), np.nan, shape)
 
         return shape
 
-class FoldCalculator(LayerCalculator): # DONE
+class FoldCloseCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.ASPECT]
@@ -165,7 +159,32 @@ class FoldCalculator(LayerCalculator): # DONE
         aspect = layers.get(Layer.ASPECT)
 
         fold = self.get_highest_difference(aspect)
-        fold = np.where(fold > 180, 360 - fold, fold)
+
+        return fold
+    
+    @staticmethod
+    @nb.njit(parallel=True, fastmath=True)
+    def get_highest_difference(data):
+        y_length, x_length = data.shape
+        highest_difference = np.zeros((y_length, x_length))
+
+        for y in nb.prange(1, y_length - 1):
+            for x in range(1, x_length - 1):
+                aspect_around = data[y - 1 : y + 2, x - 1 : x + 2]
+                difference = np.absolute(aspect_around - data[y, x])
+                difference = np.where(difference > 180, 360 - difference, difference)
+                highest_difference[y, x] = difference.max()
+        
+        return highest_difference
+
+class FoldFarCalculator(LayerCalculator):
+    def __init__(self):
+        self.required_layers = [Layer.ASPECT]
+        
+    def calculate(self, layers):
+        aspect = layers.get(Layer.ASPECT)
+
+        fold = self.get_highest_difference(aspect)
 
         return fold
     
@@ -175,29 +194,41 @@ class FoldCalculator(LayerCalculator): # DONE
         y_length, x_length = data.shape
         highest_difference = np.zeros((y_length, x_length)).astype(np.float32)
 
-        for y in nb.prange(1, y_length - 1):
-            for x in range(1, x_length - 1):
-                aspect_around = data[y - 1 : y + 2, x - 1 : x + 2].astype(np.float32)
-                highest_difference[y, x] = (np.absolute(aspect_around - data[y, x])).max()
-        
+        def get_projected_point(radius, alpha_rad, y, x):
+            y = y + (radius * np.sin(alpha_rad))
+            x = x + (radius * np.cos(alpha_rad))
+            return y, x
+
+        rad_list = [np.pi * (0) / 180,
+                    np.pi * (36) / 180,
+                    np.pi * (72) / 180,
+                    np.pi * (108) / 180,
+                    np.pi * (144) / 180,
+                    np.pi * (180) / 180,
+                    np.pi * (216) / 180,
+                    np.pi * (252) / 180,
+                    np.pi * (288) / 180,
+                    np.pi * (324) / 180]
+
+        indice_y = np.zeros(10).astype(np.int8)
+        indice_x = np.zeros(10).astype(np.int8)
+
+        for i, rad in enumerate(rad_list):
+            y, x = get_projected_point(10, rad, 0, 0)
+            indice_y[i] = int(y)
+            indice_x[i] = int(x)
+
+        for y in nb.prange(10, y_length - 10):
+            for x in range(10, x_length - 10):
+                aspect_around = np.zeros(10).astype(np.float32)
+                for i in range(10):
+                    aspect_around[i] = data[y+indice_y[i], x+indice_x[i]]
+                difference = np.absolute(aspect_around - data[y, x])
+                difference = np.where(difference > 180, 360 - difference, difference)
+                highest_difference[y, x] = difference.max()
         return highest_difference
 
-class FoldLevelCalculator(LayerCalculator): # DONE
-
-    def __init__(self):
-        self.required_layers = [Layer.FOLD]
-    
-    def calculate(self, layers):
-        fold = layers.get(Layer.FOLD)
-
-        fold_level = np.where(fold > 22.5, 1, 0)
-        fold_level = np.where(fold > 45, 2, fold_level)
-        fold_level = np.where(fold > 90, 3, fold_level)
-        fold_level = np.where(fold > 135, 4, fold_level)
-
-        return fold_level
-
-class RelevantSlopeAreaCalculator(LayerCalculator): # DONE
+class RelevantSlopeAreaCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.SLOPE, Layer.PLAN_CURVATURE]
@@ -315,75 +346,41 @@ class RelevantSlopeAreaCalculator(LayerCalculator): # DONE
 
         return t_5
 
-class RelevantSlopeAreaPropertiesCalculator(LayerCalculator): # TODO
+class RsaMaxSlopeCalculator(LayerCalculator):
 
     def __init__(self):
         self.required_layers = [Layer.RELEVANT_SLOPE_AREA.ALPHA, Layer.RELEVANT_SLOPE_AREA.R1, Layer.RELEVANT_SLOPE_AREA.R2, Layer.RELEVANT_SLOPE_AREA.FORM, Layer.ASPECT, Layer.SLOPE, Layer.FOLD]
     
-    def calculate(self, layers): # TODO Refractor
+    def calculate(self, layers):
         alpha = layers.get(Layer.RELEVANT_SLOPE_AREA.ALPHA)
-        aspect = layers.get(Layer.ASPECT)
         r1 = layers.get(Layer.RELEVANT_SLOPE_AREA.R1)
         r2 = layers.get(Layer.RELEVANT_SLOPE_AREA.R2)
-        fold = layers.get(Layer.FOLD)
         mask = layers.get(Layer.RELEVANT_SLOPE_AREA.FORM)
+        aspect = layers.get(Layer.ASPECT)
         slope = layers.get(Layer.SLOPE)
+        fold = layers.get(Layer.FOLD)
 
-        size, steepest_slope = self.calculate_properties(alpha, r1, r2, mask, aspect, slope, fold)
+        max_slope = self.calculate_max_slope(alpha, r1, r2, mask, aspect, slope, fold)
 
-        return size, steepest_slope
-
-        # r1_point_start = self.get_projected_point(r1, np.pi * ((180+aspect - alpha/2) / 180), mask_inv, None)
-        # r1_point_mid_1 = self.get_projected_point(r1, np.pi * ((180+aspect - alpha/4) / 180), mask_inv, None)
-        # r1_point_mid_2 = self.get_projected_point(r1, np.pi * ((180+aspect) / 180), mask_inv, None)
-        # r1_point_mid_3 = self.get_projected_point(r1, np.pi * ((180+aspect + alpha/4) / 180), mask_inv, None)
-        # r1_point_end = self.get_projected_point(r1, np.pi * ((180+aspect + alpha/2) / 180), mask_inv, None)
-        # r2_point_start = self.get_projected_point(r2, np.pi * ((aspect - alpha/2) / 180), mask_inv, None)
-        # r2_point_mid_1 = self.get_projected_point(r2, np.pi * ((aspect - alpha/4) / 180), mask_inv, None)
-        # r2_point_mid_2 = self.get_projected_point(r2, np.pi * ((aspect) / 180), mask_inv, None)
-        # r2_point_mid_3 = self.get_projected_point(r2, np.pi * ((aspect + alpha/4) / 180), mask_inv, None)
-        # r2_point_end = self.get_projected_point(r2, np.pi * ((aspect + alpha/2) / 180), mask_inv, None)
-
-        # r1_point_start = self. get_projected_point(r1, np.pi * (0) / 180, mask, r1_point_start)
-        # r1_point_mid_1 = self. get_projected_point(r1, np.pi * (36) / 180, mask, r1_point_mid_1)
-        # r1_point_mid_2 = self. get_projected_point(r1, np.pi * (72) / 180, mask, r1_point_mid_2)
-        # r1_point_mid_3 = self. get_projected_point(r1, np.pi * (108) / 180, mask, r1_point_mid_3)
-        # r1_point_end = self. get_projected_point(r1, np.pi * (144) / 180, mask, r1_point_end)
-        # r2_point_start = self. get_projected_point(r1, np.pi * (180) / 180, mask, r2_point_start)
-        # r2_point_mid_1 = self. get_projected_point(r1, np.pi * (216) / 180, mask, r2_point_mid_1)
-        # r2_point_mid_2 = self. get_projected_point(r1, np.pi * (252) / 180, mask, r2_point_mid_2)
-        # r2_point_mid_3 = self. get_projected_point(r1, np.pi * (288) / 180, mask, r2_point_mid_3)
-        # r2_point_end = self. get_projected_point(r1, np.pi * (324) / 180, mask, r2_point_end)
-
-        # mask_inv = np.where(mask == 1, 0, 1)
-        # poly_y_g[0], poly_x_g[0] =  r1_point_start[0][y_1_g, x_1_g], r1_point_start[1][y_1_g, x_1_g]
-        # poly_y_g[1], poly_x_g[1] =  r1_point_mid_1[0][y_1_g, x_1_g], r1_point_mid_1[1][y_1_g, x_1_g]  
-        # poly_y_g[2], poly_x_g[2] =  r1_point_mid_2[0][y_1_g, x_1_g], r1_point_mid_2[1][y_1_g, x_1_g] 
-        # poly_y_g[3], poly_x_g[3] =  r1_point_mid_3[0][y_1_g, x_1_g], r1_point_mid_3[1][y_1_g, x_1_g] 
-        # poly_y_g[4], poly_x_g[4] =  r1_point_end[0][y_1_g, x_1_g], r1_point_end[1][y_1_g, x_1_g] 
-        # poly_y_g[5], poly_x_g[5] =  r2_point_start[0][y_1_g, x_1_g], r2_point_start[1][y_1_g, x_1_g] 
-        # poly_y_g[6], poly_x_g[6] =  r2_point_mid_1[0][y_1_g, x_1_g], r2_point_mid_1[1][y_1_g, x_1_g] 
-        # poly_y_g[7], poly_x_g[7] =  r2_point_mid_2[0][y_1_g, x_1_g], r2_point_mid_2[1][y_1_g, x_1_g] 
-        # poly_y_g[8], poly_x_g[8] =  r2_point_mid_3[0][y_1_g, x_1_g], r2_point_mid_3[1][y_1_g, x_1_g]
-        # poly_y_g[9], poly_x_g[9] =  r2_point_end[0][y_1_g, x_1_g], r2_point_end[1][y_1_g, x_1_g]
+        return max_slope
 
     @staticmethod
     @nb.njit(parallel=True, fastmath=True)
-    def calculate_properties(alpha, r1, r2, mask, aspect, slope, fold): # TODO Refractor
+    def calculate_max_slope(alpha, r1, r2, mask, aspect, slope, fold):
 
-        def calculate_size_steepestslope(poly_y_w, poly_x, fold, slope, y_1, x_1):
+        def rasterize_polygon(poly_y_w, poly_x, fold, slope, y_1, x_1):
             min_x = int(np.floor(np.min(poly_x)))
             max_x = int(np.ceil(np.max(poly_x)))
             min_y = int(np.floor(np.min(poly_y_w)))
             max_y = int(np.ceil(np.max(poly_y_w)))
-                    
+   
             #check if RSA geometry is inside the data layer -> if not return zero values
             layer_size_y, layer_size_x = fold.shape
             if min_y <= 0 or min_x <= 0:
-                return 0, 0.0 # auf np.nan unstellen
+                return 0 # auf np.nan unstellen
             elif max_y >= layer_size_y or max_x >= layer_size_x:
-                return 0, 0.0
-                    
+                return 0
+               
             # add extra row/column at each side -> to be safe that the RSA-Geometry is in the bounding box
             bounding_box_x_length = max_x - min_x + 2
             bounding_box_y_length = max_y - min_y + 2
@@ -397,7 +394,7 @@ class RelevantSlopeAreaPropertiesCalculator(LayerCalculator): # TODO
             # offset for indice array -> indices like in data layer
             yy = yy + min_y - 1 
             xx = xx + min_x - 1
-
+            
             for i in range(bounding_box_y_length):
                 for j in range(bounding_box_x_length):
                     x = xx[i, j]
@@ -467,40 +464,31 @@ class RelevantSlopeAreaPropertiesCalculator(LayerCalculator): # TODO
                                     mask[y_w+1, x_w+1] = 3
                             else:
                                 break
-
             mask = np.where(mask != 1, 0, 1)
-            size = np.sum(mask) # count all RSA cells -> count is size in m^2
 
             slope_mask = np.where(mask == 1, slope[min_y-1: min_y-1 + bounding_box_y_length, min_x-1 : min_x-1 + bounding_box_x_length], 0)
-            total =np.sum(slope_mask)
-            
-            if size == 0:
-                average_slope = 0
-            else:
-                average_slope = total / size # extract max slope in RSA
+            max_slope = slope_mask.max()
 
-            return average_slope, size
-
+            return max_slope
+ 
         def get_projected_point(radius, alpha_rad, y_l, x_l):
             y_l = y_l + (radius * np.sin(alpha_rad))
             x_l = x_l + (radius * np.cos(alpha_rad))
             return y_l, x_l
 
-        size = np.zeros(r1.shape)
         max_slope = np.zeros(r1.shape)
 
-        for y_g in nb.prange(r1.shape[0]):
-            for x_g in range(r1.shape[0]):
-                y_1_g = y_g # A-Form 732, D-Form wide 365, D-Form tight
-                x_1_g = x_g # A-Form 382, D- Form wide 320, D-Form tight
+        for y in nb.prange(r1.shape[0]):
+            for x in range(r1.shape[0]):
 
-                if np.isnan(r1[y_1_g, x_1_g]) or r1[y_1_g, x_1_g] == 0: #
+                if np.isnan(r1[y, x]) or r1[y, x] == 0: #
                     continue
-                    
+
                 poly_y_g = np.zeros(10, dtype=np.float64)
                 poly_x_g = np.zeros(10, dtype=np.float64)
-                    
-                if mask[y_1_g, x_1_g]: # A-Form
+                
+                # create angles in degree for polygon corner points
+                if mask[y, x]: # A-Form
                     r1_start_radian = np.pi * (0) / 180
                     r1_mid1_radian = np.pi * (36) / 180
                     r1_mid2_radian = np.pi * (72) / 180
@@ -512,29 +500,29 @@ class RelevantSlopeAreaPropertiesCalculator(LayerCalculator): # TODO
                     r2_mid3_radian = np.pi * (288) / 180
                     r2_end_radian = np.pi * (324) / 180
                 else: # D-Form
-                    r1_start_radian = np.pi * ((180+aspect[y_1_g, x_1_g] - alpha[y_1_g, x_1_g]/2) / 180)
-                    r1_mid1_radian = np.pi * ((180+aspect[y_1_g, x_1_g] - alpha[y_1_g, x_1_g]/4) / 180)
-                    r1_mid2_radian = np.pi * ((180+aspect[y_1_g, x_1_g]) / 180)
-                    r1_mid3_radian = np.pi * ((180+aspect[y_1_g, x_1_g] + alpha[y_1_g, x_1_g]/4) / 180)
-                    r1_end_radian = np.pi * ((180+aspect[y_1_g, x_1_g] + alpha[y_1_g, x_1_g]/2) / 180)
-                    r2_start_radian = np.pi * ((aspect[y_1_g, x_1_g] - alpha[y_1_g, x_1_g]/2) / 180)
-                    r2_mid1_radian = np.pi * ((aspect[y_1_g, x_1_g] - alpha[y_1_g, x_1_g]/4) / 180)
-                    r2_mid2_radian = np.pi * ((aspect[y_1_g, x_1_g]) / 180)
-                    r2_mid3_radian = np.pi * ((aspect[y_1_g, x_1_g] + alpha[y_1_g, x_1_g]/4) / 180)
-                    r2_end_radian = np.pi * ((aspect[y_1_g, x_1_g] + alpha[y_1_g, x_1_g]/2) / 180)
+                    r1_start_radian = np.pi * ((180+aspect[y, x] - alpha[y, x]/2) / 180)
+                    r1_mid1_radian = np.pi * ((180+aspect[y, x] - alpha[y, x]/4) / 180)
+                    r1_mid2_radian = np.pi * ((180+aspect[y, x]) / 180)
+                    r1_mid3_radian = np.pi * ((180+aspect[y, x] + alpha[y, x]/4) / 180)
+                    r1_end_radian = np.pi * ((180+aspect[y, x] + alpha[y, x]/2) / 180)
+                    r2_start_radian = np.pi * ((aspect[y, x] - alpha[y, x]/2) / 180)
+                    r2_mid1_radian = np.pi * ((aspect[y, x] - alpha[y, x]/4) / 180)
+                    r2_mid2_radian = np.pi * ((aspect[y, x]) / 180)
+                    r2_mid3_radian = np.pi * ((aspect[y, x] + alpha[y, x]/4) / 180)
+                    r2_end_radian = np.pi * ((aspect[y, x] + alpha[y, x]/2) / 180)
                         
-                poly_y_g[0], poly_x_g[0] = get_projected_point(r1[y_1_g, x_1_g], r1_start_radian, y_1_g, x_1_g)
-                poly_y_g[1], poly_x_g[1] = get_projected_point(r1[y_1_g, x_1_g], r1_mid1_radian, y_1_g, x_1_g)
-                poly_y_g[2], poly_x_g[2] = get_projected_point(r1[y_1_g, x_1_g], r1_mid2_radian, y_1_g, x_1_g)
-                poly_y_g[3], poly_x_g[3] = get_projected_point(r1[y_1_g, x_1_g], r1_mid3_radian, y_1_g, x_1_g)
-                poly_y_g[4], poly_x_g[4] = get_projected_point(r1[y_1_g, x_1_g], r1_end_radian, y_1_g, x_1_g)
-                poly_y_g[5], poly_x_g[5] = get_projected_point(r2[y_1_g, x_1_g], r2_start_radian, y_1_g, x_1_g)
-                poly_y_g[6], poly_x_g[6] = get_projected_point(r2[y_1_g, x_1_g], r2_mid1_radian, y_1_g, x_1_g)
-                poly_y_g[7], poly_x_g[7] = get_projected_point(r2[y_1_g, x_1_g], r2_mid2_radian, y_1_g, x_1_g)
-                poly_y_g[8], poly_x_g[8] = get_projected_point(r2[y_1_g, x_1_g], r2_mid3_radian, y_1_g, x_1_g)
-                poly_y_g[9], poly_x_g[9] = get_projected_point(r2[y_1_g, x_1_g], r2_end_radian, y_1_g, x_1_g)
-            
-                max_slope[y_1_g, x_1_g], size[y_1_g, x_1_g] = calculate_size_steepestslope(poly_y_g, poly_x_g, fold, slope, y_1_g, x_1_g)
-              
-        
-        return max_slope, size
+                poly_y_g[0], poly_x_g[0] = get_projected_point(r1[y, x], r1_start_radian, y, x)
+                poly_y_g[1], poly_x_g[1] = get_projected_point(r1[y, x], r1_mid1_radian, y, x)
+                poly_y_g[2], poly_x_g[2] = get_projected_point(r1[y, x], r1_mid2_radian, y, x)
+                poly_y_g[3], poly_x_g[3] = get_projected_point(r1[y, x], r1_mid3_radian, y, x)
+                poly_y_g[4], poly_x_g[4] = get_projected_point(r1[y, x], r1_end_radian, y, x)
+                poly_y_g[5], poly_x_g[5] = get_projected_point(r2[y, x], r2_start_radian, y, x)
+                poly_y_g[6], poly_x_g[6] = get_projected_point(r2[y, x], r2_mid1_radian, y, x)
+                poly_y_g[7], poly_x_g[7] = get_projected_point(r2[y, x], r2_mid2_radian, y, x)
+                poly_y_g[8], poly_x_g[8] = get_projected_point(r2[y, x], r2_mid3_radian, y, x)
+                poly_y_g[9], poly_x_g[9] = get_projected_point(r2[y, x], r2_end_radian, y, x)
+
+                # calculate slope max in polygon
+                max_slope[y, x] = rasterize_polygon(poly_y_g, poly_x_g, fold, slope, y, x)
+
+        return max_slope

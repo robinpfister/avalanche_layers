@@ -12,6 +12,7 @@ import gitlab
 from enum import Enum
 import xml.etree.ElementTree as ET
 import shutil
+from datetime import date
 
 from layer import Layer
 
@@ -22,21 +23,25 @@ class Region(Enum):
     SWITZERLAND = 'switzerland'
     TYROL = 'tyrol'
 
+class Daytime(Enum):
+    EARLY = 'preprocess_layer/danger_early.tif'
+    LATE = 'preprocess_layer/danger_late.tif'
+
 class Map():
+    
     def __init__(self, layerCalculatorFactory):
         gdal.UseExceptions()
 
         self.layer_data_directory = 'layer_data'
         self.input_data_directory = 'input_data'
         
+        self.working_daytime = None
         self.working_region = None
         self.working_region_directory = None
 
         self.height_layer_path = None
         self.avalanche_report_region_layer_path = None
-
         self.microregions_path = None
-
         self.standardized_avalanche_report_path = None
         self.raw_avalanche_report_path = None
 
@@ -46,10 +51,12 @@ class Map():
         self.working_geotransform = None
         self.working_srs = None
 
-        self.avalanche_report_url = {Region.BAVARIA : 'https://static.lawinen-warnung.eu/bulletins/2025-04-04/2025-04-04_DE-BY_de_CAAMLv6.xml', #aktueller tag!!!!!!!!!!!!!
-                                     Region.SWITZERLAND : "https://aws.slf.ch/api/bulletin/caaml/v4/de/geojson",
-                                     Region.TYROL : "https://static.avalanche.report/bulletins/2025-04-04/2025-04-04_EUREGIO_de_CAAMLv6.xml"}#https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.xml
-        
+        today = date.today()
+        date_str = today.strftime("%Y-%m-%d")
+        self.avalanche_report_url = {Region.BAVARIA : f'https://static.lawinen-warnung.eu/bulletins/{date_str}/{date_str}_DE-BY_de_CAAMLv6.xml',
+                                     Region.SWITZERLAND : "https://aws.slf.ch/api/bulletin/caaml/v4/de/geojson?activeAt=2025-04-15T01:00:00%2B02:00",
+                                     Region.TYROL : "https://static.avalanche.report/bulletins/latest/EUREGIO_de_CAAMLv6.xml"}
+
         self.avalanche_report_microregions = {Region.BAVARIA : ['DE-BY'],
                                               Region.SWITZERLAND : None,
                                               Region.TYROL : ['AT-07', 'IT-32-BZ', 'IT-32-TN']}
@@ -60,7 +67,7 @@ class Map():
 
     def register_new_data(self):
         self.delete_layer_data()
-        for region in Region: # loop through all supported regions
+        for region in Region:
             self.set_working_region(region)
             if self.input_data_available():
                 self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}')
@@ -69,7 +76,7 @@ class Map():
                 self.create_directory(f'{self.layer_data_directory}/{self.working_region_directory}/preprocess_layer/rsa')
                 self.preprocess_dgm()
                 self.set_tif_properties()
-                #self.preprocess_avalanche_report()
+                self.preprocess_avalanche_report()
 
     def set_working_region(self, region):
         self.working_region = region
@@ -90,6 +97,9 @@ class Map():
         if os.path.exists(self.height_layer_path):
             self.set_tif_properties()
 
+    def set_working_daytime(self, daytime):
+        self.working_daytime = daytime
+
     def set_tif_properties(self):
         array, geotransform, projection, srs = self.get_tif_data(self.height_layer_path)
         self.working_x_length = array.shape[1]
@@ -107,23 +117,23 @@ class Map():
 
 ##### DIRECTORY MANAGEMENT #####
 
-    def delete_layer_data(self): # DONE
+    def delete_layer_data(self):
         if os.path.exists(self.layer_data_directory) and os.path.isdir(self.layer_data_directory):
                 shutil.rmtree(self.layer_data_directory)
 
-    def delete_file(self, path): # DONE
+    def delete_file(self, path):
         os.remove(path)
 
-    def create_directory(self, path): # DONE
+    def create_directory(self, path):
         os.makedirs(path)
 
-    def input_data_available(self): # DONE
+    def input_data_available(self):
         input_data_path = f'{self.input_data_directory}/{self.working_region_directory}'
         return os.path.isdir(input_data_path) and len(os.listdir(input_data_path)) > 0
 
 ##### TIF/JSON HANDLING FUNKTIONS #####
 
-    def get_tif_data(self, path): # DONE
+    def get_tif_data(self, path):
         file = gdal.Open(path)
         array = file.ReadAsArray()
         geotransform = file.GetGeoTransform()
@@ -132,7 +142,7 @@ class Map():
         file = None
         return array, geotransform, projection, srs
 
-    def create_tif(self, path, array, geotransform, projection): # DONE
+    def create_tif(self, path, array, geotransform, projection):
         driver = gdal.GetDriverByName('GTiff')
 
         y_length, x_length = array.shape
@@ -152,7 +162,7 @@ class Map():
         band.FlushCache()
         band.ComputeStatistics(False)
 
-    def get_geojson_data(self, path): # DONE
+    def get_geojson_data(self, path):
         file = gdal.OpenEx(path, 0)
         layer = file.GetLayer()
 
@@ -165,7 +175,7 @@ class Map():
 
         return features, srs
 
-    def create_geojson(self, path, name, srs, feature_list): # DONE
+    def create_geojson(self, path, name, srs, feature_list):
         driver = ogr.GetDriverByName('GeoJSON')
         file = driver.CreateDataSource(path)
         layer = file.CreateLayer(name, srs=srs)
@@ -175,28 +185,28 @@ class Map():
 
 ##### DGM PREPROCESS STUFF #####
 
-    def preprocess_dgm(self): # DONE
+    def preprocess_dgm(self):
         self.create_height_layer()
         self.standardize_height_layer()
     
-    def create_height_layer(self): # DONE
+    def create_height_layer(self):
         tif_files = glob.glob(f'{self.input_data_directory}/{self.working_region_directory}/*.tif') # get list of all hight_layers in input_data/region folder
         gdal.Warp(self.height_layer_path, tif_files, format="GTiff", srcNodata=-9999, dstNodata=-9999) # join all hight_layers to one big height_layer
 
-    def standardize_height_layer(self): # DONE
+    def standardize_height_layer(self):
         if self.working_region == Region.TYROL:
             self.cut_edge_layer(self.height_layer_path) # cut edge row/column
             self.downscale_layer(self.height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
         elif self.working_region == Region.SWITZERLAND:
             self.downscale_layer(self.height_layer_path, 2) # downscale factor 2 (0.5m -> 1m)
 
-    def cut_edge_layer(self, path): # DONE
+    def cut_edge_layer(self, path):
         layer_array, geotransform, projection, _ = self.get_tif_data(path)
         layer_array = layer_array[0:-1, 0:-1]
         self.delete_file(path)
         self.create_tif(path, layer_array, geotransform, projection)
 
-    def downscale_layer(self, path, scale_factor): # DONE
+    def downscale_layer(self, path, scale_factor):
         layer_array, geotransform, projection, _ = self.get_tif_data(path)
         y_length, x_length = layer_array.shape
         layer_array = layer_array.reshape(y_length//2, 2, x_length//2, 2).mean(axis=(1, 3)) # combine 4 pixels to one
@@ -211,27 +221,26 @@ class Map():
 
 ##### AVALANCHE REPORT PREPROCESS STUFF #####
 
-    def preprocess_avalanche_report(self): # DONE
+    def preprocess_avalanche_report(self):
         if self.working_region in [Region.BAVARIA, Region.TYROL]:
             self.create_microregion_definition()
-
         self.pull_avalanche_report()
         self.standardize_avalanche_report()
-
         self.burn_geometries_in_raster()
         self.create_danger_layer()
 
-    def create_microregion_definition(self): # DONE
+    def create_microregion_definition(self):
             self.pull_microregions()
             self.convert_geojson_srs(self.microregions_path)
 
-    def pull_avalanche_report(self): # DONE
+    def pull_avalanche_report(self):
         response = requests.get(self.avalanche_report_url[self.working_region])
         if response.status_code == 200:
             data = response.content
             with open(f'{self.raw_avalanche_report_path}', 'wb') as file:
                 file.write(data)
         else:
+            print(response.content)
             print('Download of avalanche report doesn\'t work')
         
     def standardize_avalanche_report(self):
@@ -241,7 +250,7 @@ class Map():
             self.create_standardized_avalanche_report_switzerland()
             self.convert_geojson_srs(self.standardized_avalanche_report_path)
             
-    def pull_microregions(self): # DONE
+    def pull_microregions(self):
         gl = gitlab.Gitlab("https://gitlab.com")
         project = gl.projects.get(25330421)
 
@@ -264,7 +273,7 @@ class Map():
                 with open(self.microregions_path, "wb") as file:
                     file.write(file_data)
 
-    def convert_geojson_srs(self, path): # DONE
+    def convert_geojson_srs(self, path):
         src_features, src_srs = self.get_geojson_data(path)
         src_srs.SetAxisMappingStrategy(osr.OAMS_TRADITIONAL_GIS_ORDER)
 
@@ -282,7 +291,7 @@ class Map():
         self.delete_file(path)
         self.create_geojson(path, 'test', dst_srs, dst_features)
 
-    def burn_geometries_in_raster(self): # DONE
+    def burn_geometries_in_raster(self):
 
         features, srs = self.get_geojson_data(self.standardized_avalanche_report_path)
 
@@ -306,7 +315,7 @@ class Map():
         mask_raster.FlushCache()
         mask_raster = None
 
-    def create_standardized_avalanche_report_CAAMLV6(self): # TODO patterns aufnehmen, Cleanup 
+    def create_standardized_avalanche_report_CAAMLV6(self): 
         tag_prefix = '{http://caaml.org/Schemas/V6.0/Profiles/BulletinEAWS}'
         tree = ET.parse(self.raw_avalanche_report_path)
         root = tree.getroot()
@@ -414,7 +423,7 @@ class Map():
         with open(self.standardized_avalanche_report_path, 'w') as f:
             json.dump(standardized_avalanche_report_dict, f, indent= 4)
 
-    def create_standardized_avalanche_report_switzerland(self): # TODO : Cleanup
+    def create_standardized_avalanche_report_switzerland(self): 
         
         driver = ogr.GetDriverByName('GeoJSON')
         src_file = driver.Open(self.raw_avalanche_report_path, 0)  # 0 bedeutet nur Lesen
@@ -438,6 +447,8 @@ class Map():
                 main_value = danger_rating['mainValue']
                 if 'customData' in danger_rating and 'CH' in danger_rating['customData'] and 'subdivision' in danger_rating['customData']['CH']:
                     sub_value = danger_rating['customData']['CH']['subdivision']
+                else:
+                    sub_value = None
                 time_slot = danger_rating['validTimePeriod']
                 danger = {'main_value' : main_value,
                           'sub_value' : sub_value,
@@ -466,6 +477,8 @@ class Map():
 
                 if 'aspects' in avalanche_problem:
                     aspects = avalanche_problem['aspects']
+                else:
+                    aspects = None
                 
                 time_slot = avalanche_problem['validTimePeriod']
 
@@ -490,7 +503,7 @@ class Map():
         src_file = None
         dst_file = None
 
-    def create_danger_layer(self): # TODO Nochmal verbessern welche Gefahrenstufe exakt gewählt wird
+    def create_danger_layer(self):
         features, _ = self.get_geojson_data(self.standardized_avalanche_report_path)
 
         earlier_list = []
@@ -535,7 +548,11 @@ class Map():
         
         self.save_layer([Layer.DANGER_EARLY, Layer.DANGER_LATE], [danger_layer_early, danger_layer_late])
 
-    def convert_mainValue(self, mainValue): # DONE
+        if self.working_daytime != None:
+            danger_array, _, _, _ = self.get_tif_data(f'{self.layer_data_directory}/{self.working_region_directory}/{self.working_daytime.value}')
+            self.save_layer([Layer.SITUATION_RISK], [danger_array])
+
+    def convert_mainValue(self, mainValue):
         mainValueInt = 0
         if mainValue == 'low':
             mainValueInt = 1
@@ -547,7 +564,7 @@ class Map():
             mainValueInt = 4
         return mainValueInt
     
-    def convert_subValue(self, subValue): # DONE
+    def convert_subValue(self, subValue):
         mainValueInt = 0
         if subValue == 'minus':
             mainValueInt = -0.33
@@ -559,7 +576,7 @@ class Map():
 
 ##### CALCULATE #####
 
-    def calculateLayer(self, layertype): # TODO
+    def calculateLayer(self, layertype):
         layerCalculator = self.layerCalculatorFactory.get_calculator(layertype)
         layers = self.get_required_layers_dict(layerCalculator.required_layers)
         
@@ -570,7 +587,7 @@ class Map():
 
         self.save_layer(layertype, layer_arrays)
 
-    def get_required_layers_dict(self, required_layertypes): # TODO
+    def get_required_layers_dict(self, required_layertypes):
         layers_dict = {}
         for required_layertype in required_layertypes:
             required_layer_filepath = f'{self.layer_data_directory}/{self.working_region_directory}/{required_layertype.value}'
@@ -591,7 +608,7 @@ class Map():
                 file = None
         return layers_dict
 
-    def save_layer(self, layertypes, layer_arrays): # TODO
+    def save_layer(self, layertypes, layer_arrays):
         if type(layertypes) == Layer: # layertype != preprocessed data
             layertypes = [layertypes]
             layer_arrays = [layer_arrays]
@@ -602,7 +619,7 @@ class Map():
 
 ##### SHOW #####
 
-    def showLayer(self, layertypes): # TODO
+    def showLayer(self, layertypes):
 
         min_max_mapping = { Layer.PROFILE_CURVATURE :   {'min' : -0.3,
                                                          'max' : 0.3},
@@ -624,14 +641,14 @@ class Map():
                 min = manipulated_array.min()
                 max = manipulated_array.max()
             
-            ax.imshow(layer_array, cmap = 'viridis', vmin = min, vmax = max) # extent=[660000, 670000, 5270000, 5280000]
+            ax.imshow(layer_array, cmap = 'Dark2', vmin = min, vmax = max) # extent=[660000, 670000, 5270000, 5280000]
             norm = Normalize(min, max)
             m = pyplot.cm.ScalarMappable(norm=norm, cmap= 'viridis')
             m.set_array([])
             pyplot.colorbar(m, ax=ax, orientation="horizontal")
         pyplot.show()
 
-    def show3D(self, layertypes, cmaps, values, area): # TODO
+    def show3D(self, layertypes, cmaps, values, area):
         fig = pyplot.figure(figsize=(10, 8))
 
         x = np.linspace(0, area[3]-1, area[3])

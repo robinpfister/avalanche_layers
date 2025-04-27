@@ -18,7 +18,6 @@ class Layer(Enum):
         G = 'preprocess_layer/coefficients/g.tif'
         H = 'preprocess_layer/coefficients/h.tif'
         I = 'preprocess_layer/coefficients/i.tif'
-        VARIABILITÄT = 'preprocess_layer/variability.tif'
     
     ASPECT = 'preprocess_layer/aspect.tif'
     ASPECT_LEVEL = 'aspect_level.tif'
@@ -31,7 +30,6 @@ class Layer(Enum):
     SHAPE = 'shape.tif'
 
     FOLD = 'preprocess_layer/fold.tif'
-    FOLD_LEVEL = 'fold_level.tif'
 
     @skip
     class RELEVANT_SLOPE_AREA(Enum):
@@ -40,11 +38,10 @@ class Layer(Enum):
         R2 = 'preprocess_layer/rsa/r2.tif'
         FORM = 'preprocess_layer/rsa/form.tif'
 
-    class RELEVANT_SLOPE_AREA_PROPERTIES(Enum):
-        AVERAGE_SLOPE = 'preprocess_layer/rsa/maximum_slope.tif'
-        SIZE = 'preprocess_layer/rsa/size.tif'
+    RSA_MAX_SLOPE = 'preprocess_layer/max_slope.tif'
 
     TOPO_RISK = 'topo_risk.tif'
     TOPO_RISK_LEVEL = 'topo_risk_level.tif'
     SITUATION_RISK = 'situation_risk.tif'
     COMBINED_RISK = 'combined_risk.tif'
+    COMBINED_RISK_LEVEL = 'combined_risk_level.tif'
